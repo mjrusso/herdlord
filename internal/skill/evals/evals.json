@@ -1,0 +1,23 @@
+{
+  "skill_name": "herdlord",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Which of my Herdr agents need attention right now?",
+      "expected_output": "Runs herdlord list with JSON output, prioritizes blocked and done agents, and reports target failures without hiding successful results.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Why is the buildbox agent missing from my dashboard?",
+      "expected_output": "Uses herdlord status and targets list to distinguish paused, unreachable, missing-Herdr, and protocol-skew states without guessing the transport.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Show me the recent output from pane w2:p1 on workbox.",
+      "expected_output": "Uses herdlord read workbox w2:p1 and does not attach, send input, or mark the pane as seen.",
+      "files": []
+    }
+  ]
+}
