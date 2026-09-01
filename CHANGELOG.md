@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.1.0 - 2026-08-31
+
 - Add a terminal dashboard that combines agents from local and remote Herdr
   sessions and puts agents that need attention first.
 - Add dashboard controls for inspecting agent output and attaching to Herdr
