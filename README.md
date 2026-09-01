@@ -9,6 +9,10 @@ Herdlord is a TUI and CLI for monitoring agents across local and remote
 agent, find the ones that need attention, inspect output, and attach to any
 session.
 
+> [!NOTE]
+> Herdr is a terminal multiplexer for coding agents. Herdlord is a
+> _Herdr multiplexer_.
+
 ![Herdlord dashboard monitoring agents across multiple Herdr sessions](assets/herdlord-dashboard.png)
 
 ## Installation
