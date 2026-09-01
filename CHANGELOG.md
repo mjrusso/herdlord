@@ -4,6 +4,7 @@
 
 - Support SSH targets that use Fish as their remote login shell, including
   Herdr installations in `~/.local/bin`.
+- Render keyboard shortcuts consistently throughout the TUI.
 
 ## v0.1.0 - 2026-08-31
 

@@ -340,6 +340,19 @@ func TestFooterAdaptsToWidth(t *testing.T) {
 	}
 }
 
+func TestDashboardFooterStylesFirstShortcut(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Agent: "codex", Status: "idle"}}}
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	lines := strings.Split(strings.TrimSuffix(m.View(), "\n"), "\n")
+	footer := lines[len(lines)-1]
+	if !strings.Contains(footer, "\x1b[1m↑/↓\x1b[0m \x1b[90mnavigate") {
+		t.Fatalf("first dashboard shortcut is not distinct from its label: %q", footer)
+	}
+}
+
 func TestDashboardFitsShortTerminal(t *testing.T) {
 	m := New([]target.Target{{Name: "box"}, {Name: "offline"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Agent: "codex", Status: "working", Workspace: "herdlord", Tab: "dashboard", Revision: 1}}}
@@ -404,6 +417,8 @@ func TestFreshPollClearsRefreshMessage(t *testing.T) {
 }
 
 func TestNavigationKeyMapAndHelp(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
 	km := navigationKeyMap()
 	wants := [][]string{
 		{"up", "k", "ctrl+p"}, {"down", "j", "ctrl+n"}, {"pgup", "b", "alt+v"}, {"pgdown", "f", "ctrl+v"},
@@ -417,16 +432,20 @@ func TestNavigationKeyMapAndHelp(t *testing.T) {
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1"}}}
 	m.rebuildRows()
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
-	view := m.View()
-	for _, want := range []string{"Previous / next", "C-p", "M-v", "Half-page up/down", "Toggle inspector", "Manage targets", "Close help"} {
+	rawView := m.View()
+	view := ansi.Strip(rawView)
+	for _, want := range []string{"Previous / next", "C-p", "M-v", "Half-page up/down", "Toggle inspector", "Manage targets", "?/Esc/q close", "Ctrl-C quit"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("help missing %q:\n%s", want, view)
 		}
 	}
+	if !strings.Contains(rawView, "\x1b[1m?/Esc/q\x1b[0m \x1b[90mclose") {
+		t.Fatalf("help shortcut styling is inconsistent: %q", rawView)
+	}
 	if strings.Contains(view, "Once attached") {
 		t.Fatalf("generic help contains attach-only instructions:\n%s", view)
 	}
-	actions := []string{"Attach agent", "Toggle inspector", "Expand output", "Manage targets", "Refresh targets", "Close help", "Quit"}
+	actions := []string{"Attach agent", "Toggle inspector", "Expand output", "Manage targets", "Refresh targets"}
 	foundActions := 0
 	for _, line := range strings.Split(helpOverlay(true, true), "\n") {
 		for _, action := range actions {
@@ -448,6 +467,8 @@ func TestNavigationKeyMapAndHelp(t *testing.T) {
 }
 
 func TestAttachExplainsHowToReturn(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
 	m := New([]target.Target{{Name: "workbox"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["workbox"] = poll.TargetStatus{State: poll.OK, HerdrPath: "/opt/herdr", Agents: []herdr.Agent{{PaneID: "p1", TerminalID: "term-1", Agent: "codex"}}}
 	m.rebuildRows()
@@ -455,11 +476,15 @@ func TestAttachExplainsHowToReturn(t *testing.T) {
 	if cmd != nil || m.overlay.kind != overlayAttach {
 		t.Fatalf("first Enter = command %v, overlay %v", cmd != nil, m.overlay.kind)
 	}
-	view := ansi.Strip(m.View())
+	rawView := m.View()
+	view := ansi.Strip(rawView)
 	for _, want := range []string{"Attach to codex on workbox?", "Once attached, to return to Herdlord: Ctrl-b, then q", "Enter attach", "q/Esc cancel"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("attach panel missing %q:\n%s", want, view)
 		}
+	}
+	if !strings.Contains(rawView, "\x1b[1mEnter\x1b[0m \x1b[90mattach") || !strings.Contains(rawView, "\x1b[1mq/Esc\x1b[0m \x1b[90mcancel") {
+		t.Fatalf("attach shortcut styling is inconsistent: %q", rawView)
 	}
 	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil || m.overlay.kind != overlayNone {
@@ -484,6 +509,8 @@ func TestAttachConfirmationCannotSwitchAgents(t *testing.T) {
 }
 
 func TestDeleteRequiresConfirmation(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
 	path := filepath.Join(t.TempDir(), "targets.json")
 	configured := []target.Target{{Name: "workbox"}}
 	if err := target.Save(path, configured); err != nil {
@@ -507,8 +534,13 @@ func TestDeleteRequiresConfirmation(t *testing.T) {
 	m.openTargetManager()
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
-	if !strings.Contains(m.View(), `Remove "workbox" from Herdlord?`) || !strings.Contains(m.View(), "y delete  q/n/Esc cancel") {
-		t.Fatalf("confirmation view:\n%s", m.View())
+	rawView := m.View()
+	view := ansi.Strip(rawView)
+	if !strings.Contains(view, `Remove "workbox" from Herdlord?`) || !strings.Contains(view, "y delete  q/n/Esc cancel") {
+		t.Fatalf("confirmation view:\n%s", view)
+	}
+	if !strings.Contains(rawView, "\x1b[1my\x1b[0m \x1b[90mdelete") || !strings.Contains(rawView, "\x1b[1mq/n/Esc\x1b[0m \x1b[90mcancel") {
+		t.Fatalf("delete shortcut styling is inconsistent: %q", rawView)
 	}
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	if got, err := target.Load(path); err != nil || len(got) != 0 {

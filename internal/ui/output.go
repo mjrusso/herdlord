@@ -248,14 +248,19 @@ func (m *Model) expandedOutputView() string {
 		content = "Loading recent output…"
 	}
 	position := fmt.Sprintf("%d%%", int(m.outputViewport.ScrollPercent()*100))
-	footer := "↑/↓ scroll  PgUp/PgDn page  q/o/Esc close  Ctrl-C quit  " + position
+	footer := hints(
+		hint("↑/↓", "scroll"),
+		hint("PgUp/PgDn", "page"),
+		hint("q/o/Esc", "close"),
+		hint("Ctrl-C", "quit"),
+	) + "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(position)
 	return strings.Join([]string{
 		lipgloss.NewStyle().Bold(true).Render("Recent terminal output"),
 		context,
 		"",
 		content,
 		"",
-		lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(footer),
+		footer,
 	}, "\n")
 }
 
@@ -280,11 +285,11 @@ func (m *Model) attachFocused() tea.Cmd {
 func (m *Model) attachView() string {
 	r := m.focused()
 	if r == nil || r.agent == nil {
-		return "The selected agent is no longer available.\n\nq/Esc close"
+		return "The selected agent is no longer available.\n\n" + hint("q/Esc", "close")
 	}
 	return fmt.Sprintf(
-		"Attach to %s on %s?\n\nOnce attached, to return to Herdlord: Ctrl-b, then q\n\nEnter attach  q/Esc cancel",
-		displayLabel(r.agent.Agent), displayLabel(r.target),
+		"Attach to %s on %s?\n\nOnce attached, to return to Herdlord: Ctrl-b, then q\n\n%s",
+		displayLabel(r.agent.Agent), displayLabel(r.target), hints(hint("Enter", "attach"), hint("q/Esc", "cancel")),
 	)
 }
 

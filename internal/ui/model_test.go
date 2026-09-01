@@ -187,8 +187,8 @@ func TestTargetManagerEditsAndPausesTargets(t *testing.T) {
 			t.Fatalf("target manager missing %q:\n%s", want, view)
 		}
 	}
-	if raw := m.targetManagerView(); !strings.Contains(raw, "\x1b[1ma\x1b[0m add") {
-		t.Fatalf("target-manager add shortcut is not bold:\n%q", raw)
+	if raw := m.targetManagerView(); !strings.Contains(raw, "\x1b[1ma\x1b[0m \x1b[90madd") {
+		t.Fatalf("target-manager shortcut styling is inconsistent:\n%q", raw)
 	}
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
 	got, err := target.Load(path)
@@ -264,8 +264,8 @@ func TestAddFormShowsAllFieldsAndContextualControls(t *testing.T) {
 	if strings.Contains(view, "enter attach") {
 		t.Fatalf("add form retained dashboard shortcuts:\n%s", view)
 	}
-	if !strings.Contains(rawView, "\x1b[1mTab/Shift-Tab") {
-		t.Fatalf("add form shortcut is not bold:\n%q", rawView)
+	if !strings.Contains(rawView, "\x1b[1mTab/Shift-Tab\x1b[0m \x1b[90mmove") {
+		t.Fatalf("add form shortcut styling is inconsistent:\n%q", rawView)
 	}
 	for _, block := range []string{
 		"SSH example:   `ssh workbox --`\n  Voom example:  `voom ssh play --`",
@@ -683,6 +683,8 @@ func TestEmptyRecentOutputIsExplicit(t *testing.T) {
 }
 
 func TestExpandedOutputScrollsAndCloses(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
 	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Workspace: "project", Agent: "codex", Revision: 1}}}
 	m.rebuildRows()
@@ -698,10 +700,14 @@ func TestExpandedOutputScrollsAndCloses(t *testing.T) {
 		t.Fatalf("expanded output did not open at bottom: expanded=%v offset=%d", (m.overlay.kind == overlayOutput), m.outputViewport.YOffset)
 	}
 	view := m.View()
+	plainView := ansi.Strip(view)
 	for _, want := range []string{"Recent terminal output", "box / project / codex", "PgUp/PgDn page", "o/Esc close"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("expanded output missing %q:\n%s", want, view)
+		if !strings.Contains(plainView, want) {
+			t.Fatalf("expanded output missing %q:\n%s", want, plainView)
 		}
+	}
+	if !strings.Contains(view, "\x1b[1m↑/↓\x1b[0m \x1b[90mscroll") {
+		t.Fatalf("expanded-output shortcut styling is inconsistent: %q", view)
 	}
 	bottom := m.outputViewport.YOffset
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})

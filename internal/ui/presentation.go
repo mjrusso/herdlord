@@ -7,7 +7,7 @@ import (
 )
 
 func hint(keys, action string) string {
-	return lipgloss.NewStyle().Bold(true).Render(keys) + " " + action
+	return lipgloss.NewStyle().Bold(true).Render(keys) + " " + lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(action)
 }
 
 func hints(items ...string) string {

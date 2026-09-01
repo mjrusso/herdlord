@@ -195,7 +195,7 @@ func (m *Model) deleteView() string {
 		"",
 		ansi.Wrap("This removes the target configuration. It does not stop Herdr or its agents.", contentWidth, " "),
 		"",
-		lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("y delete  q/n/Esc cancel  Ctrl-C quit"),
+		hints(hint("y", "delete"), hint("q/n/Esc", "cancel"), hint("Ctrl-C", "quit")),
 	}
 	return strings.Join(lines, "\n")
 }

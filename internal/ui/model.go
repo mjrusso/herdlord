@@ -473,7 +473,7 @@ func (m *Model) addFormView() string {
 		hint("Esc", "cancel"),
 		hint("Ctrl-C", "quit"),
 	)
-	body.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(shortcuts))
+	body.WriteString("\n" + shortcuts)
 	return body.String()
 }
 
@@ -569,7 +569,7 @@ func (m *Model) dashboardView() string {
 		parts = append(parts, m.noticeView())
 	}
 	body := strings.Join(parts, "\n\n")
-	footer := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(m.footerView())
+	footer := m.footerView()
 	gap := 2
 	if m.height > 0 && lipgloss.Height(body) < m.height {
 		gap = m.height - lipgloss.Height(body)

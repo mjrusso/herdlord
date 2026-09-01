@@ -26,8 +26,8 @@ func helpOverlay(hasTargets, hasAgents bool) string {
 		return strings.Join([]string{
 			"Getting started",
 			helpRow("Manage targets", "t"),
-			helpRow("Close help", "?, Esc, q"),
-			helpRow("Quit", "C-c"),
+			"",
+			hints(hint("?/Esc/q", "close"), hint("Ctrl-C", "quit")),
 		}, "\n")
 	}
 	lines := []string{
@@ -51,8 +51,8 @@ func helpOverlay(hasTargets, hasAgents bool) string {
 	lines = append(lines,
 		helpRow("Manage targets", "t"),
 		helpRow("Refresh targets", "r"),
-		helpRow("Close help", "?, Esc, q"),
-		helpRow("Quit", "C-c"),
+		"",
+		hints(hint("?/Esc/q", "close"), hint("Ctrl-C", "quit")),
 	)
 	return strings.Join(lines, "\n")
 }
