@@ -77,12 +77,11 @@ Press `t` to open target management, then press `a` to add a target. Enter
 `local` as the name, leave both prefix fields empty, and press `Enter`. After
 Herdlord validates the target, press `q` to return to the dashboard.
 
-> [!NOTE]
-> You can also add the local target from the CLI:
->
-> ```sh
-> herdlord targets add local
-> ```
+Or add the local target from the CLI:
+
+```sh
+herdlord targets add local
+```
 
 Agents from the local Herdr session now appear in the dashboard. Select an
 agent and press `Enter` twice to confirm and attach. To return to Herdlord,
@@ -96,9 +95,9 @@ herdr status
 ssh workbox -- herdr status
 ```
 
-The first command checks the local session; the second checks a session on an
-example SSH host named `workbox`. Once the remote command succeeds, press `t`
-and then `a` in Herdlord. Enter these values:
+The second command checks the session on an example SSH host named `workbox`.
+Once the remote command succeeds, press `t` and then `a` in Herdlord. Enter
+these values:
 
 | Field          | Value               |
 |----------------|---------------------|
@@ -109,14 +108,13 @@ and then `a` in Herdlord. Enter these values:
 Press `Enter` to validate and save the target, then press `q` to return to the
 dashboard.
 
-> [!NOTE]
-> You can also add the remote target from the CLI:
->
-> ```sh
-> herdlord targets add remote \
->   --prefix 'ssh workbox --' \
->   --attach-prefix 'ssh -t workbox --'
-> ```
+Or add the remote target from the CLI:
+
+```sh
+herdlord targets add remote \
+  --prefix 'ssh workbox --' \
+  --attach-prefix 'ssh -t workbox --'
+```
 
 Agents from both sessions appear together with their Herdr workspace and tab
 labels. Agents that need attention appear first.
@@ -184,9 +182,7 @@ use `ssh -t`.
 Use `Tab` or `Shift-Tab` to move between fields. Press `Enter` to validate and
 save the target, or press `Esc` to cancel.
 
-Targets are stored in `$XDG_CONFIG_HOME/herdlord/targets.json` (or the platform
-user configuration directory). An open dashboard automatically reloads changes
-made through the CLI.
+The dashboard automatically reloads target changes made through the CLI.
 
 ### Target health
 
@@ -219,8 +215,7 @@ herdlord status
 herdlord status remote
 ```
 
-Status output includes the last successful refresh. JSON uses the exact
-`lastSuccess` timestamp; the text table shows a relative age.
+Status output includes the last successful refresh.
 
 Read recent plain-text output using a `pane_id` returned by `list`:
 
@@ -240,23 +235,19 @@ herdlord targets rm remote
 ```
 
 The [getting-started guide](#getting-started) shows how to add local and SSH
-targets. Omit `--prefix` when adding a target for the local machine. The attach
-prefix defaults to the normal prefix. Set `--attach-prefix ''` during an update
-to restore that default.
+targets. Omit `--prefix` when adding a target that points to the local machine.
+The attach prefix defaults to the normal prefix. Set `--attach-prefix ''`
+during an update to restore that default.
 
-Adding a target or changing its normal prefix checks Herdr before saving. An
-unreachable, missing, or too-old Herdr is reported and still saved, so the
-dashboard can track its state. A newer protocol is saved with a warning and
-Herdlord attempts to use it.
+Target validation reports connection and compatibility problems without
+preventing the target from being saved.
 
 Use `--output json` or `--format json` for scripts. Agent records include the
 authoritative `workspace` and `tab` labels with their stable `workspace_id` and
 `tab_id`. A failed target remains in the JSON response alongside successful
-targets. Newer targets include `"state": "newer"`, their protocol number, and
-the compatibility warning while still returning any agents Herdlord could
-decode. Text list output adds a target-status row with the same warning. Fleet
-commands return a non-zero status when every requested target fails; a usable
-`newer` target is not considered failed.
+targets.
+
+Fleet commands return a non-zero status only when every requested target fails.
 
 ## Targets and transports
 
@@ -294,13 +285,14 @@ Target prefixes use shell-like quoting to split the configured text into
 arguments. Herdlord does not run the prefix through a local shell or expand
 environment variables, command substitutions, or backticks. It appends the
 Herdr command and arguments to that prefix and executes the resulting argument
-list directly. For example, a monitoring call through `ssh workbox --` is
-shaped like `ssh workbox -- env -u HERDR_SOCKET_PATH -u
-HERDR_CLIENT_SOCKET_PATH /path/to/herdr ...`.
+list directly. The configured transport may invoke a shell in the target
+environment. For example, a monitoring call through `ssh workbox --` is shaped
+like `ssh workbox -- env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH
+/path/to/herdr ...`.
 
 The transport process inherits the current user's environment and uses that
-user's SSH, Kubernetes, Docker, or Voom configuration and credentials. Only
-configure prefixes you trust.
+user's transport configuration and credentials. Only configure prefixes you
+trust.
 
 ## Requirements and compatibility
 
