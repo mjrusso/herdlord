@@ -28,8 +28,6 @@ func NewerProtocolWarning(protocol int) string {
 	return fmt.Sprintf("protocol %d is newer than tested protocols %s; attempting compatibility", protocol, supportedProtocolList)
 }
 
-const pathMarker = "__HERDLORD_PATH__="
-
 type Agent struct {
 	WorkspaceID           string `json:"workspace_id"`
 	Workspace             string `json:"workspace"`
@@ -116,34 +114,65 @@ func (c Client) runner() Runner {
 }
 
 func (c Client) Status(ctx context.Context, t target.Target) (Status, error) {
-	script := `path=$(command -v herdr 2>/dev/null || true)
-if [ -z "$path" ] && [ -x "${HOME:-}/.local/bin/herdr" ]; then
-  path="${HOME}/.local/bin/herdr"
-fi
-if [ -z "$path" ]; then
-  printf 'herdlord: herdr: not found\n' >&2
-  exit 127
-fi
-printf '` + pathMarker + `%s\n' "$path"
-exec "$path" status`
-	out, err := c.runner().Run(ctx, Command(t.Prefix, "sh", "-c", script))
+	path := "herdr"
+	out, err := c.runner().Run(ctx, Command(t.Prefix, path, "status"))
 	if err != nil {
-		return Status{}, err
+		directErr := err
+		if !commandUnavailable(err) {
+			return Status{}, err
+		}
+		environment, envErr := c.runner().Run(ctx, Command(t.Prefix, "env"))
+		if envErr != nil {
+			return Status{}, directErr
+		}
+		home := environmentValue(environment, "HOME")
+		if home == "" || !strings.HasPrefix(home, "/") {
+			return Status{}, directErr
+		}
+		path = strings.TrimRight(home, "/") + "/.local/bin/herdr"
+		out, err = c.runner().Run(ctx, Command(t.Prefix, path, "status"))
+		if err != nil {
+			return Status{}, err
+		}
 	}
-	lines := strings.Split(out, "\n")
-	if len(lines) == 0 || !strings.HasPrefix(lines[0], pathMarker) {
-		return Status{}, errors.New("herdr status did not report its resolved path")
-	}
-	path := strings.TrimPrefix(lines[0], pathMarker)
-	if path == "" || !strings.HasPrefix(path, "/") {
-		return Status{}, fmt.Errorf("herdr resolved to invalid path %q", path)
-	}
-	status, err := parseStatus(strings.Join(lines[1:], "\n"))
+	status, err := parseStatus(out)
 	if err != nil {
 		return Status{}, err
 	}
 	status.Path = path
 	return status, nil
+}
+
+func commandUnavailable(err error) bool {
+	var commandErr *CommandError
+	if !errors.As(err, &commandErr) {
+		return false
+	}
+	var execErr *exec.Error
+	if errors.As(commandErr.Err, &execErr) {
+		return true
+	}
+	var exitErr *exec.ExitError
+	if errors.As(commandErr.Err, &exitErr) {
+		if exitErr.ExitCode() == 127 {
+			return true
+		}
+	}
+	message := strings.ToLower(commandErr.Stderr + " " + commandErr.Err.Error())
+	return strings.Contains(message, "herdr: not found") ||
+		strings.Contains(message, "herdr: command not found") ||
+		strings.Contains(message, "unknown command: herdr") ||
+		(strings.Contains(message, "herdr") && strings.Contains(message, "no such file"))
+}
+
+func environmentValue(output, name string) string {
+	prefix := name + "="
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimPrefix(line, prefix)
+		}
+	}
+	return ""
 }
 
 func (c Client) Snapshot(ctx context.Context, t target.Target, herdrPath string) ([]Agent, error) {

@@ -29,7 +29,7 @@ func TestCommand(t *testing.T) {
 }
 
 func TestStatusUsesServerFieldsAndResolvedPath(t *testing.T) {
-	output := pathMarker + "/opt/herdr/bin/herdr\n" + `client:
+	output := `client:
   version: 0.8.0
   protocol: 19
 
@@ -39,9 +39,8 @@ server:
   protocol: 20
 `
 	client := Client{Runner: runnerFunc(func(_ context.Context, argv []string) (string, error) {
-		command := strings.Join(argv, " ")
-		if !strings.Contains(command, "command -v herdr") || !strings.Contains(command, ".local/bin/herdr") {
-			t.Fatalf("status command does not resolve herdr: %#v", argv)
+		if !reflect.DeepEqual(argv, []string{"ssh", "box", "--", "env", "-u", "HERDR_SOCKET_PATH", "-u", "HERDR_CLIENT_SOCKET_PATH", "herdr", "status"}) {
+			t.Fatalf("status command = %#v", argv)
 		}
 		return output, nil
 	})}
@@ -49,7 +48,7 @@ server:
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Status{Protocol: 20, Version: "0.9.0", Path: "/opt/herdr/bin/herdr"}
+	want := Status{Protocol: 20, Version: "0.9.0", Path: "herdr"}
 	if got != want {
 		t.Fatalf("Status() = %#v, want %#v", got, want)
 	}
@@ -81,6 +80,72 @@ func TestStatusFindsUserLocalInstallation(t *testing.T) {
 	}
 	if status.Path != path {
 		t.Fatalf("Status().Path = %q, want %q", status.Path, path)
+	}
+}
+
+func TestStatusFindsRemoteUserLocalInstallationWithoutShell(t *testing.T) {
+	output := `client:
+  version: 0.8.0
+  protocol: 19
+
+server:
+  status: running
+  version: 0.8.0
+  protocol: 19
+`
+	tests := []struct {
+		name       string
+		prefix     []string
+		directErr  error
+		directText string
+	}{
+		{name: "SSH", prefix: []string{"ssh", "workbox", "--"}, directErr: errors.New("exit status 127"), directText: "sh: herdr: not found"},
+		{name: "Voom SSH", prefix: []string{"voom", "ssh", "play", "--"}, directErr: errors.New("exit status 1"), directText: "fish: Unknown command: herdr"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls [][]string
+			client := Client{Runner: runnerFunc(func(_ context.Context, argv []string) (string, error) {
+				calls = append(calls, append([]string(nil), argv...))
+				switch argv[len(argv)-1] {
+				case "status":
+					if argv[len(argv)-2] == "herdr" {
+						return "", &CommandError{Args: argv, Stderr: tt.directText, Err: tt.directErr}
+					}
+					return output, nil
+				case "env":
+					return "SHELL=/opt/homebrew/bin/fish\nHOME=/Users/mjr\n", nil
+				default:
+					return "", errors.New("unexpected command")
+				}
+			})}
+			status, err := client.Status(context.Background(), target.Target{Name: "remote", Prefix: tt.prefix})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.Path != "/Users/mjr/.local/bin/herdr" {
+				t.Fatalf("Status().Path = %q", status.Path)
+			}
+			for _, call := range calls {
+				if contains(call, "sh") || contains(call, "-c") {
+					t.Fatalf("status invoked a shell: %#v", call)
+				}
+			}
+		})
+	}
+}
+
+func TestStatusDoesNotMaskHerdrFailureWithFallback(t *testing.T) {
+	want := &CommandError{Stderr: "herdr server failed", Err: errors.New("exit status 1")}
+	client := Client{Runner: runnerFunc(func(_ context.Context, argv []string) (string, error) {
+		if argv[len(argv)-1] != "status" {
+			t.Fatalf("unexpected fallback command: %#v", argv)
+		}
+		return "", want
+	})}
+	_, err := client.Status(context.Background(), target.Target{Name: "remote", Prefix: []string{"ssh", "workbox", "--"}})
+	if !errors.Is(err, want) {
+		t.Fatalf("Status() error = %v, want %v", err, want)
 	}
 }
 
