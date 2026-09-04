@@ -45,7 +45,14 @@ func (m *Model) outputLineLimit() int {
 	if m.healthView() != "" {
 		limit -= 6 + m.healthRowLimit()
 	}
+	if m.compactInspector() {
+		return min(4, max(3, limit))
+	}
 	return min(36, max(3, limit))
+}
+
+func (m *Model) compactInspector() bool {
+	return m.height > 0 && m.height < 28
 }
 
 func (m *Model) updateTableHeight() {

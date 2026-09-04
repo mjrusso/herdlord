@@ -152,14 +152,30 @@ func TestInspectorUsesAvailableHeightForOutput(t *testing.T) {
 	}
 	m.outputKey, m.output, m.showInspector = "box\x00p1", strings.Join(lines, "\n"), true
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if limit := m.outputLineLimit(); limit < 8 {
-		t.Fatalf("24-line output limit = %d, want at least 8", limit)
+	if limit := m.outputLineLimit(); limit != 4 {
+		t.Fatalf("24-line output limit = %d, want 4", limit)
 	}
 	view := ansi.Strip(m.View())
-	if !strings.Contains(view, "output-13") || !strings.Contains(view, "output-20") || strings.Contains(view, "output-12") {
+	if !strings.Contains(view, "output-17") || !strings.Contains(view, "output-20") || strings.Contains(view, "output-16") {
 		t.Fatalf("inspector output allocation is wrong:\n%s", view)
 	}
+	if strings.Contains(view, "Recent output") || strings.Contains(view, "Directory ") || strings.Contains(view, "Terminal ") {
+		t.Fatalf("compact inspector contains expanded fields:\n%s", view)
+	}
 	assertFooterOnLastRow(t, view, 24)
+
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 27})
+	if limit := m.outputLineLimit(); limit != 4 {
+		t.Fatalf("27-line output limit = %d, want 4", limit)
+	}
+	if view := ansi.Strip(m.inspectorView()); strings.Contains(view, "Recent output") || strings.Contains(view, "Directory ") {
+		t.Fatalf("27-line inspector is not compact:\n%s", view)
+	}
+
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 28})
+	if view := ansi.Strip(m.inspectorView()); !strings.Contains(view, "Recent output") || !strings.Contains(view, "Directory ") {
+		t.Fatalf("28-line inspector is compact:\n%s", view)
+	}
 
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 32})
 	if limit := m.outputLineLimit(); limit < 16 {

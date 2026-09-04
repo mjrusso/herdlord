@@ -48,20 +48,39 @@ func (m *Model) inspectorView() string {
 	}
 	contentWidth := max(1, width-4)
 	r := m.focused()
+	details := m.detailsView()
+	if m.compactInspector() {
+		a := r.agent
+		details = ansi.Truncate(fmt.Sprintf("Workspace %s  Tab %s  Pane %s",
+			relationship(a.Workspace, a.WorkspaceID), relationship(a.Tab, a.TabID), displayLabel(a.PaneID)), contentWidth, "…")
+	}
 	parts := []string{
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render(
 			fmt.Sprintf("Agent inspector  %s / %s / %s", displayLabel(r.target), displayLabel(r.agent.Agent), displayLabel(agentStatusLabel(r.agent.Status))),
 		),
-		ansi.Wrap(m.detailsView(), contentWidth, ""),
+		ansi.Wrap(details, contentWidth, ""),
 	}
 	if m.outputLoading {
-		parts = append(parts, "", lipgloss.NewStyle().Bold(true).Render("Recent output"), "Loading recent output…")
+		if m.compactInspector() {
+			parts = append(parts, "Loading recent output…")
+		} else {
+			parts = append(parts, "", lipgloss.NewStyle().Bold(true).Render("Recent output"), "Loading recent output…")
+		}
 	} else if m.outputKey != "" {
 		output := truncateLines(m.output, m.outputLineLimit())
 		if output == "" {
-			output = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("No recent output")
+			empty := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("No recent output")
+			if m.compactInspector() {
+				output = lipgloss.NewStyle().Bold(true).Render("Recent output") + "  " + empty
+			} else {
+				output = empty
+			}
 		}
-		parts = append(parts, "", lipgloss.NewStyle().Bold(true).Render("Recent output"), truncateBlock(output, contentWidth))
+		if m.compactInspector() {
+			parts = append(parts, truncateBlock(output, contentWidth))
+		} else {
+			parts = append(parts, "", lipgloss.NewStyle().Bold(true).Render("Recent output"), truncateBlock(output, contentWidth))
+		}
 	}
 	body := strings.Join(parts, "\n")
 	return lipgloss.NewStyle().
