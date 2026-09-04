@@ -14,9 +14,14 @@ import (
 )
 
 func (m *Model) healthView() string {
+	width := m.width
+	if width <= 0 {
+		width = 80
+	}
+	contentWidth := max(1, width-4)
 	var body strings.Builder
 	tw := tabwriter.NewWriter(&body, 0, 0, 2, ' ', 0)
-	compact := m.width > 0 && m.width < 70
+	compact := width < 70
 	if compact {
 		_, _ = fmt.Fprintln(tw, "TARGET\tSTATE\tERROR")
 	} else {
@@ -36,9 +41,9 @@ func (m *Model) healthView() string {
 		}
 		err := strings.Join(strings.Fields(display.Text(status.Err)), " ")
 		targetName := ansi.Truncate(display.Text(configured.Name), 14, "…")
-		errWidth := max(8, m.width-34)
+		errWidth := max(8, contentWidth-34)
 		if !compact {
-			errWidth = max(12, m.width-52)
+			errWidth = max(12, contentWidth-52)
 		}
 		err = ansi.Truncate(err, errWidth, "…")
 		if compact {
@@ -52,12 +57,17 @@ func (m *Model) healthView() string {
 		return ""
 	}
 	_ = tw.Flush()
-	title := lipgloss.NewStyle().Bold(true).Render("Target health")
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render("Target health")
 	view := title + "\n" + strings.TrimRight(body.String(), "\n")
 	if hidden > 0 {
 		view += fmt.Sprintf("\n… and %d more", hidden)
 	}
-	return view
+	return lipgloss.NewStyle().
+		Width(max(1, width-2)).
+		Padding(0, 1).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("6")).
+		Render(view)
 }
 
 func (m *Model) healthRowLimit() int {

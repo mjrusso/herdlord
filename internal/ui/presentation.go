@@ -43,7 +43,7 @@ func (m *Model) outputLineLimit() int {
 		limit--
 	}
 	if m.healthView() != "" {
-		limit -= 4 + m.healthRowLimit()
+		limit -= 6 + m.healthRowLimit()
 	}
 	return min(36, max(3, limit))
 }
@@ -54,7 +54,7 @@ func (m *Model) updateTableHeight() {
 	}
 	reserved := 5
 	if m.healthView() != "" {
-		reserved += 4 + m.healthRowLimit()
+		reserved += 6 + m.healthRowLimit()
 	}
 	if focused := m.focused(); focused != nil && focused.agent != nil {
 		if m.showInspector {

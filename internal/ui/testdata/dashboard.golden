@@ -13,9 +13,11 @@ herdlord
        TARGET        WORKSPACE                       TAB                   AGENT     STATUS
  > ◇   old-box       —                               —                     —         skewed
 
-Target health
-TARGET   STATE   LAST SUCCESS  ERROR
-old-box  skewed  never         protocol 18 is too old (minimum: 19)
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Target health                                                                                    │
+│ TARGET   STATE   LAST SUCCESS  ERROR                                                             │
+│ old-box  skewed  never         protocol 18 is too old (minimum: 19)                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 ↑/↓ navigate  t targets  r refresh  ? help  q quit
 
