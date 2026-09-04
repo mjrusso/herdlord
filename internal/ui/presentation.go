@@ -68,8 +68,10 @@ func (m *Model) updateTableHeight() {
 			reserved += lipgloss.Height(m.inspectorView()) + 1
 		}
 	}
-	if m.overlay.kind != overlayNone || m.message != "" {
+	if m.overlay.kind != overlayNone {
 		reserved += 3
+	} else if m.message != "" {
+		reserved += max(3, lipgloss.Height(m.dashboardNoticeView())+1)
 	}
 	height := m.height - reserved
 	if height < 3 {

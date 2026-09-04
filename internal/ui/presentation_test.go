@@ -51,6 +51,76 @@ func TestTargetHealthShowsLastSuccessAndError(t *testing.T) {
 	}
 }
 
+func TestDashboardErrorNoticeUsesResponsivePanel(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	m := New(nil, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m.width = 52
+	m.setNotice(noticeError, "Could not read recent output: the remote connection timed out")
+
+	raw := m.dashboardNoticeView()
+	view := ansi.Strip(raw)
+	if !strings.Contains(view, "│ Error") || !strings.Contains(view, "Could not read recent output") || !strings.Contains(view, "connection timed out") {
+		t.Fatalf("error notice is not a panel:\n%s", view)
+	}
+	if !strings.Contains(raw, "\x1b[31m") {
+		t.Fatalf("error panel is not red: %q", raw)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if ansi.StringWidth(line) > m.width {
+			t.Fatalf("error line width = %d: %q", ansi.StringWidth(line), line)
+		}
+	}
+
+	m.setNotice(noticeSuccess, "Updated box")
+	if view := ansi.Strip(m.dashboardNoticeView()); view != "Success: Updated box" {
+		t.Fatalf("success notice changed: %q", view)
+	}
+}
+
+func TestDashboardErrorNoticeUpdatesAvailableHeight(t *testing.T) {
+	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Agent: "codex", Status: "idle"}}}
+	m.rebuildRows()
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 52, Height: 18})
+	heightWithoutNotice := m.table.Height()
+
+	m.setNotice(noticeError, "Could not read recent output: the remote connection timed out")
+	if m.table.Height() >= heightWithoutNotice {
+		t.Fatalf("error panel did not reduce table height: %d >= %d", m.table.Height(), heightWithoutNotice)
+	}
+	assertFooterOnLastRow(t, ansi.Strip(m.View()), 18)
+
+	m.clearNotice()
+	if m.table.Height() != heightWithoutNotice {
+		t.Fatalf("clearing error did not restore table height: %d != %d", m.table.Height(), heightWithoutNotice)
+	}
+	assertFooterOnLastRow(t, ansi.Strip(m.View()), 18)
+}
+
+func TestDashboardErrorNoticeLimitsLongMessages(t *testing.T) {
+	m := New(nil, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m.width = 32
+	message := "Could not complete the operation because the remote host returned " + strings.Repeat("diagnostic", 12) + " that should remain available in state"
+	m.setNotice(noticeError, message)
+
+	view := ansi.Strip(m.dashboardNoticeView())
+	if lines := strings.Split(view, "\n"); len(lines) != 6 {
+		t.Fatalf("error panel has %d lines, want 6:\n%s", len(lines), view)
+	}
+	if !strings.Contains(view, "…") || strings.Contains(view, "remain available") {
+		t.Fatalf("long error was not truncated:\n%s", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if ansi.StringWidth(line) > m.width {
+			t.Fatalf("long error line width = %d: %q", ansi.StringWidth(line), line)
+		}
+	}
+	if m.message != message {
+		t.Fatalf("full error was not preserved: %q", m.message)
+	}
+}
+
 func TestResponsiveAgentTableAndDetails(t *testing.T) {
 	agent := herdr.Agent{WorkspaceID: "w1", Workspace: "herdlord", TabID: "w1:t1", Tab: "dashboard", PaneID: "w1:p1", Agent: "codex", Status: "working", CWD: "/project", TerminalTitle: "◑ Adding metadata", TerminalTitleStripped: "Adding metadata", Revision: 1}
 	m := New([]target.Target{{Name: "workbox"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})

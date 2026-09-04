@@ -566,7 +566,7 @@ func (m *Model) dashboardView() string {
 		}
 	}
 	if m.message != "" {
-		parts = append(parts, m.noticeView())
+		parts = append(parts, m.dashboardNoticeView())
 	}
 	body := strings.Join(parts, "\n\n")
 	footer := m.footerView()
@@ -579,10 +579,12 @@ func (m *Model) dashboardView() string {
 
 func (m *Model) setNotice(kind noticeKind, message string) {
 	m.messageKind, m.message = kind, display.Text(message)
+	m.updateTableHeight()
 }
 
 func (m *Model) clearNotice() {
 	m.messageKind, m.message = noticeInfo, ""
+	m.updateTableHeight()
 }
 
 func (m *Model) noticeView() string {
@@ -594,6 +596,39 @@ func (m *Model) noticeView() string {
 		label, color = "Error", lipgloss.Color("1")
 	}
 	return lipgloss.NewStyle().Bold(true).Foreground(color).Render(label+":") + " " + m.message
+}
+
+func (m *Model) dashboardNoticeView() string {
+	if m.messageKind != noticeError {
+		return m.noticeView()
+	}
+	width := m.width
+	if width <= 0 {
+		width = 80
+	}
+	color := lipgloss.Color("1")
+	body := lipgloss.NewStyle().Bold(true).Foreground(color).Render("Error") + "\n" +
+		wrappedLineLimit(m.message, max(1, width-4), 3)
+	return lipgloss.NewStyle().
+		Width(max(1, width-2)).
+		Padding(0, 1).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(color).
+		Render(body)
+}
+
+func wrappedLineLimit(value string, width, limit int) string {
+	lines := strings.Split(ansi.Wrap(value, width, " "), "\n")
+	if len(lines) <= limit {
+		return strings.Join(lines, "\n")
+	}
+	lines = lines[:limit]
+	if width == 1 {
+		lines[limit-1] = "…"
+	} else {
+		lines[limit-1] = ansi.Truncate(lines[limit-1], width-1, "") + "…"
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *Model) hasAgents() bool {
