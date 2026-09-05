@@ -1,6 +1,4 @@
 == empty ==
-herdlord
-
 No targets configured
 
 Add a local or remote Herdr session to begin.
@@ -8,9 +6,7 @@ Add a local or remote Herdr session to begin.
 t targets  ? help  q quit
 
 == skewed ==
-herdlord
-
-       TARGET        WORKSPACE                       TAB                   AGENT     STATUS
+TARGET        WORKSPACE                       TAB                   AGENT     STATUS
  > ◇   old-box       —                               —                     —         skewed
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -22,9 +18,7 @@ herdlord
 ↑/↓ navigate  t targets  r refresh  ? help  q quit
 
 == no-agents ==
-herdlord
-
-       TARGET        WORKSPACE                       TAB                   AGENT     STATUS
+TARGET        WORKSPACE                       TAB                   AGENT     STATUS
  > ◇   quiet-box     —                               —                     —         no agents
 
 ↑/↓ navigate  t targets  r refresh  ? help  q quit

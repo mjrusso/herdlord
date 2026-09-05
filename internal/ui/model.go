@@ -550,8 +550,7 @@ func (m *Model) View() string {
 }
 
 func (m *Model) dashboardView() string {
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render("herdlord")
-	parts := []string{title}
+	var parts []string
 	if len(m.targets) == 0 {
 		parts = append(parts, "No targets configured\n\nAdd a local or remote Herdr session to begin.")
 	} else {

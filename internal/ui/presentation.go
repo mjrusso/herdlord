@@ -59,7 +59,7 @@ func (m *Model) updateTableHeight() {
 	if m.height <= 0 {
 		return
 	}
-	reserved := 5
+	reserved := 2
 	if m.healthView() != "" {
 		reserved += 6 + m.healthRowLimit()
 	}
