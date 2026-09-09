@@ -10,8 +10,15 @@ agent, find the ones that need attention, inspect output, and attach to any
 session.
 
 > [!NOTE]
-> Herdr is a terminal multiplexer for coding agents. Herdlord is a
-> _Herdr multiplexer_.
+> Herdr is a terminal multiplexer for coding agents. Herdlord is a _Herdr
+> multiplexer_.
+>
+> [Herdr 0.9 adds multi-machine
+> support](https://herdr.dev/blog/connecting-the-machines/), enabling a single
+> Herdr client to connect to multiple Herdr servers. Herdlord remains useful as
+> a standalone dashboard. For example, to help prevent unrelated work from
+> competing for your attention, you may prefer to run separate Herdr sessions
+> per work stream and periodically check in using Herdlord.
 
 ![Herdlord dashboard monitoring agents across multiple Herdr sessions](assets/herdlord-dashboard.png)
 
