@@ -91,7 +91,7 @@ func TestListTextAndJSON(t *testing.T) {
 
 func TestListAttemptsNewerProtocolAndShowsWarning(t *testing.T) {
 	client := &fakeClient{
-		statuses: map[string]herdr.Status{"future": {Protocol: 21, Version: "0.9.0", Path: "/opt/herdr"}},
+		statuses: map[string]herdr.Status{"future": {Protocol: 23, Version: "0.10.0", Path: "/opt/herdr"}},
 		agents:   map[string][]herdr.Agent{"future": {{Workspace: "project", PaneID: "p1", Agent: "codex", Status: "working"}}},
 	}
 	path := saveTargets(t, []target.Target{{Name: "future"}})
@@ -100,7 +100,7 @@ func TestListAttemptsNewerProtocolAndShowsWarning(t *testing.T) {
 		t.Fatalf("list output:\n%s", out)
 	}
 	jsonOutput := runCommand(t, client, "--config", path, "--output", "json", "list")
-	if !strings.Contains(jsonOutput, `"state":"newer"`) || !strings.Contains(jsonOutput, `"protocol":21`) {
+	if !strings.Contains(jsonOutput, `"state":"newer"`) || !strings.Contains(jsonOutput, `"protocol":23`) {
 		t.Fatalf("list JSON = %s", jsonOutput)
 	}
 }

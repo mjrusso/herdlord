@@ -30,13 +30,15 @@ func TestCommand(t *testing.T) {
 
 func TestStatusUsesServerFieldsAndResolvedPath(t *testing.T) {
 	output := `client:
-  version: 0.8.0
-  protocol: 19
+  version: 0.9.0
+  protocol: 22
 
 server:
   status: running
   version: 0.9.0
-  protocol: 20
+  endpoint_compatible: yes
+  private_protocol: 22
+  private_protocol_compatible: yes
 `
 	client := Client{Runner: runnerFunc(func(_ context.Context, argv []string) (string, error) {
 		if !reflect.DeepEqual(argv, []string{"ssh", "box", "--", "env", "-u", "HERDR_SOCKET_PATH", "-u", "HERDR_CLIENT_SOCKET_PATH", "herdr", "status"}) {
@@ -48,7 +50,7 @@ server:
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Status{Protocol: 20, Version: "0.9.0", Path: "herdr"}
+	want := Status{Protocol: 22, Version: "0.9.0", Path: "herdr"}
 	if got != want {
 		t.Fatalf("Status() = %#v, want %#v", got, want)
 	}
@@ -58,6 +60,16 @@ func TestParseStatusRejectsStoppedServer(t *testing.T) {
 	_, err := parseStatus("server:\n  status: not running\n")
 	if err == nil || !strings.Contains(err.Error(), "not running") {
 		t.Fatalf("parseStatus() error = %v", err)
+	}
+}
+
+func TestParseStatusAcceptsLegacyProtocolField(t *testing.T) {
+	got, err := parseStatus("server:\n  status: running\n  version: 0.8.2\n  protocol: 20\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Protocol != 20 || got.Version != "0.8.2" {
+		t.Fatalf("parseStatus() = %#v", got)
 	}
 }
 
@@ -154,7 +166,7 @@ func TestSnapshotDecoding(t *testing.T) {
 		if argv[len(argv)-2] != "api" || argv[len(argv)-1] != "snapshot" {
 			t.Fatalf("snapshot argv = %#v", argv)
 		}
-		return `{"result":{"snapshot":{"protocol":20,"workspaces":[{"workspace_id":"w1","label":"herdlord"}],"tabs":[{"tab_id":"w1:t1","workspace_id":"w1","label":"dashboard"}],"agents":[{"workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p1","terminal_id":"term_1","agent":"codex","agent_status":"working","cwd":"/tmp/project","terminal_title":"◑ Building","terminal_title_stripped":"Building","revision":7}]}}}`, nil
+		return `{"result":{"snapshot":{"protocol":22,"workspaces":[{"workspace_id":"w1","label":"herdlord"}],"tabs":[{"tab_id":"w1:t1","workspace_id":"w1","label":"dashboard"}],"agents":[{"workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p1","terminal_id":"term_1","agent":"codex","agent_status":"working","cwd":"/tmp/project","terminal_title":"◑ Building","terminal_title_stripped":"Building","revision":7}]}}}`, nil
 	})}
 	agents, err := client.Snapshot(context.Background(), target.Target{}, "/opt/herdr")
 	if err != nil {
@@ -177,7 +189,7 @@ func TestSnapshotAcceptsProtocol19(t *testing.T) {
 
 func TestSnapshotAttemptsNewerProtocol(t *testing.T) {
 	client := Client{Runner: runnerFunc(func(context.Context, []string) (string, error) {
-		return `{"result":{"snapshot":{"protocol":21,"workspaces":[],"tabs":[],"agents":[]}}}`, nil
+		return `{"result":{"snapshot":{"protocol":23,"workspaces":[],"tabs":[],"agents":[]}}}`, nil
 	})}
 	agents, err := client.Snapshot(context.Background(), target.Target{}, "herdr")
 	if err != nil || len(agents) != 0 {

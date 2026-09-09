@@ -308,13 +308,16 @@ compatibility from best-effort forward compatibility:
 | 18 or older | —                                                              | Rejected as `skewed`            |
 |          19 | [0.8.0](https://github.com/herdrdev/herdr/releases/tag/v0.8.0) | Supported                       |
 |          20 | [0.8.2](https://github.com/herdrdev/herdr/releases/tag/v0.8.2) | Supported                       |
-| 21 or newer | —                                                              | Attempted as `newer` (untested) |
+|          21 | —                                                              | Attempted as `newer` (untested) |
+|          22 | [0.9.0](https://github.com/herdrdev/herdr/releases/tag/v0.9.0) | Supported                       |
+| 23 or newer | —                                                              | Attempted as `newer` (untested) |
 
-Targets below protocol 19 are rejected as `skewed`. When a target reports a
-newer, untested protocol, Herdlord marks it as `newer` but still attempts to
-fetch agents, read output, and attach. This preserves forward compatibility
-without presenting an untested combination as supported. Herdlord does not
-install Herdr or transport programs such as SSH or Voom.
+Targets below protocol 19 are rejected as `skewed`. When a target reports an
+untested protocol that is new enough to attempt, Herdlord marks it as `newer`
+but still tries to fetch agents, read output, and attach. This preserves
+compatibility where possible without presenting an untested combination as
+supported. Herdlord does not install Herdr or transport programs such as SSH or
+Voom.
 
 Forward compatibility is best effort. Additive protocol changes should continue
 to work because Herdlord ignores snapshot fields it does not use. If a newer

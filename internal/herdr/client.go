@@ -12,12 +12,12 @@ import (
 	"github.com/mjrusso/herdlord/internal/target"
 )
 
-const Protocol = 20
+const Protocol = 22
 
-const supportedProtocolList = "19, 20"
+const supportedProtocolList = "19, 20, 22"
 
 func SupportsProtocol(protocol int) bool {
-	return protocol == 19 || protocol == 20
+	return protocol == 19 || protocol == 20 || protocol == 22
 }
 
 func CanAttemptProtocol(protocol int) bool {
@@ -25,7 +25,7 @@ func CanAttemptProtocol(protocol int) bool {
 }
 
 func NewerProtocolWarning(protocol int) string {
-	return fmt.Sprintf("protocol %d is newer than tested protocols %s; attempting compatibility", protocol, supportedProtocolList)
+	return fmt.Sprintf("protocol %d is untested (tested: %s); attempting compatibility", protocol, supportedProtocolList)
 }
 
 type Agent struct {
@@ -273,7 +273,11 @@ func parseStatus(output string) (Status, error) {
 	if fields["status"] != "running" {
 		return Status{}, errors.New("herdr server is not running")
 	}
-	protocol, err := strconv.Atoi(fields["protocol"])
+	protocolValue := fields["protocol"]
+	if protocolValue == "" {
+		protocolValue = fields["private_protocol"]
+	}
+	protocol, err := strconv.Atoi(protocolValue)
 	if err != nil || fields["version"] == "" {
 		return Status{}, errors.New("herdr status did not report a server version and protocol")
 	}

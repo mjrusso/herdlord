@@ -213,7 +213,8 @@ Keep these areas covered:
 - concurrent target mutations and live TUI configuration reconciliation.
 
 Fixture commands should print recorded responses for the supported Herdr
-protocols: Herdr 0.8.0 protocol 19 and Herdr 0.8.2 protocol 20.
+protocols: Herdr 0.8.0 protocol 19, Herdr 0.8.2 protocol 20, and Herdr 0.9.0
+protocol 22.
 Failure fixtures should support non-zero exits, stderr output, malformed JSON,
 and a delay longer than the configured timeout.
 

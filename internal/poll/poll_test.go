@@ -3,6 +3,7 @@ package poll
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -105,14 +106,18 @@ func TestCheckSuccessCachesProbeData(t *testing.T) {
 	}
 }
 
-func TestCheckAcceptsProtocol19(t *testing.T) {
-	client := &fakeClient{
-		status:   herdr.Status{Protocol: 19, Version: "0.8.0", Path: "/opt/herdr"},
-		snapshot: []herdr.Agent{{PaneID: "w1:p1"}},
-	}
-	got := (Manager{Client: client, Timeout: time.Second}).Check(context.Background(), target.Target{Name: "box"})
-	if got.State != OK || got.Protocol != 19 || len(got.Agents) != 1 {
-		t.Fatalf("Check() = %#v", got)
+func TestCheckAcceptsSupportedProtocols(t *testing.T) {
+	for _, protocol := range []int{19, 20, 22} {
+		t.Run(fmt.Sprint(protocol), func(t *testing.T) {
+			client := &fakeClient{
+				status:   herdr.Status{Protocol: protocol, Version: "0.9.0", Path: "/opt/herdr"},
+				snapshot: []herdr.Agent{{PaneID: "w1:p1"}},
+			}
+			got := (Manager{Client: client, Timeout: time.Second}).Check(context.Background(), target.Target{Name: "box"})
+			if got.State != OK || got.Protocol != protocol || len(got.Agents) != 1 {
+				t.Fatalf("Check() = %#v", got)
+			}
+		})
 	}
 }
 
@@ -136,13 +141,17 @@ func TestCheckClassifiesStatusAndSnapshotSkew(t *testing.T) {
 }
 
 func TestCheckAttemptsNewerProtocol(t *testing.T) {
-	client := &fakeClient{
-		status:   herdr.Status{Protocol: 21, Version: "0.9.0", Path: "/opt/herdr"},
-		snapshot: []herdr.Agent{{PaneID: "w1:p1"}},
-	}
-	got := (Manager{Client: client, Timeout: time.Second}).Check(context.Background(), target.Target{Name: "box"})
-	if got.State != Newer || got.Protocol != 21 || len(got.Agents) != 1 || got.LastSuccess.IsZero() || !strings.Contains(got.Err, "attempting compatibility") {
-		t.Fatalf("Check() = %#v", got)
+	for _, protocol := range []int{21, 23} {
+		t.Run(fmt.Sprint(protocol), func(t *testing.T) {
+			client := &fakeClient{
+				status:   herdr.Status{Protocol: protocol, Version: "future", Path: "/opt/herdr"},
+				snapshot: []herdr.Agent{{PaneID: "w1:p1"}},
+			}
+			got := (Manager{Client: client, Timeout: time.Second}).Check(context.Background(), target.Target{Name: "box"})
+			if got.State != Newer || got.Protocol != protocol || len(got.Agents) != 1 || got.LastSuccess.IsZero() || !strings.Contains(got.Err, "attempting compatibility") {
+				t.Fatalf("Check() = %#v", got)
+			}
+		})
 	}
 }
 
