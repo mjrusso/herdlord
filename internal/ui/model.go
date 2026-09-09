@@ -607,7 +607,7 @@ func (m *Model) dashboardNoticeView() string {
 	}
 	color := lipgloss.Color("1")
 	body := lipgloss.NewStyle().Bold(true).Foreground(color).Render("Error") + "\n" +
-		wrappedLineLimit(m.message, max(1, width-4), 3)
+		wrappedDashboardError(m.message, max(1, width-4))
 	return lipgloss.NewStyle().
 		Width(max(1, width-2)).
 		Padding(0, 1).
@@ -616,7 +616,9 @@ func (m *Model) dashboardNoticeView() string {
 		Render(body)
 }
 
-func wrappedLineLimit(value string, width, limit int) string {
+func wrappedDashboardError(value string, width int) string {
+	const limit = 3
+
 	lines := strings.Split(ansi.Wrap(value, width, " "), "\n")
 	if len(lines) <= limit {
 		return strings.Join(lines, "\n")
