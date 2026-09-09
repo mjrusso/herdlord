@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v0.1.2 - 2026-09-08
+
+- Support Herdr 0.9.0 and protocol 22.
+- Present target health in a separate dashboard panel and improve target error
+  notices.
+- Keep the agent inspector usable in shorter terminals.
+- Remove the redundant dashboard header.
+
 ## v0.1.1 - 2026-09-01
 
 - Support SSH targets that use Fish as their remote login shell, including
