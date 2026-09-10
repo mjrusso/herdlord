@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.2.0 - 2026-09-10
+
 - Add a pasture dashboard view that shows each target as a fenced pen and each
   agent as an animated sheep. Press `v` to switch between the table and the
   pasture.
