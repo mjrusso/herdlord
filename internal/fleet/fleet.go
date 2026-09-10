@@ -14,6 +14,11 @@ type Observation struct {
 	Status poll.TargetStatus
 }
 
+type Snapshot struct {
+	Targets  []target.Target
+	Statuses map[string]poll.TargetStatus
+}
+
 type Collector struct {
 	Manager poll.Manager
 }
