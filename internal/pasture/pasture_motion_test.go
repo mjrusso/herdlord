@@ -155,7 +155,7 @@ func TestCompletedRemovalDeletesFinalKittyPlacement(t *testing.T) {
 		m.advanceState(m.snapshot())
 		view := testView(m)
 		if _, exists := m.state.sheep[fleet.NewAgentKey("local", agent.PaneID)]; !exists {
-			if !strings.Contains(view, fmt.Sprintf("a=d,d=i,i=%d,q=2", kittySpiritID)) {
+			if !strings.Contains(view, fmt.Sprintf("a=d,d=i,i=%d,p=", kittySpiritID)) {
 				t.Fatal("completed removal did not delete the final Kitty placement")
 			}
 			return
@@ -288,21 +288,33 @@ func TestKittyAnimationFramesUseDistinctPlacements(t *testing.T) {
 	}
 }
 
-func TestKittyFrameClearsEverySheepVariant(t *testing.T) {
-	m := physicsModel(t, nil)
-	renderer := newKittyFrameRenderer()
-	grid := m.layout(contentWidth(m.width))
-	view := renderer.render(m.buildSceneForTest(contentWidth(m.width), grid))
+func TestKittyFrameClearsTheSupersededSheepPose(t *testing.T) {
+	m := physicsModel(t, []herdr.Agent{{PaneID: "p1", Status: "idle"}})
+	testView(m)
+	m.statuses["local"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Status: "working"}}}
+	m.state.ReconcileAgents("local", m.statuses["local"])
+	view := testView(m)
+	cleared := false
 	for _, sprite := range kittySprites {
-		if sprite.active() && sprite.class&kittySheep != 0 {
-			if !strings.Contains(view, fmt.Sprintf("a=d,d=i,i=%d,q=2", sprite.id)) {
-				t.Fatalf("frame did not clear sheep image %d", sprite.id)
-			}
+		if sprite.active() && sprite.class&kittySheep != 0 && strings.Contains(view, fmt.Sprintf("a=d,d=i,i=%d,p=", sprite.id)) {
+			cleared = true
 		}
+	}
+	if !cleared {
+		t.Fatal("pose change did not clear the sheep's previous placement")
 	}
 }
 
-func TestHeightOnlyResizeInvalidatesCenteredKittyLayout(t *testing.T) {
+// A steady scene must delete nothing. Per-frame deletes made the pasture flicker.
+func TestKittySteadyFrameDeletesNothing(t *testing.T) {
+	m := physicsModel(t, []herdr.Agent{{PaneID: "p1", Status: "idle"}})
+	testView(m)
+	if view := testView(m); strings.Contains(view, "a=d,d=i") {
+		t.Fatal("unchanged frame deleted placements")
+	}
+}
+
+func TestHeightOnlyResizeRedrawsCenteredKittyLayout(t *testing.T) {
 	targets := []target.Target{{Name: "north-field"}, {Name: "south-field"}, {Name: "orchard"}}
 	m := newTestModel(targets)
 	for _, configured := range targets {
@@ -328,9 +340,8 @@ func TestHeightOnlyResizeInvalidatesCenteredKittyLayout(t *testing.T) {
 
 	view := renderer.render(secondScene)
 	for _, imageID := range []int{kittyFenceVertID, kittyTargetSignID, kittyCastleID, kittyRoadVertID, kittyFenceGateID, kittyShepherdID, kittyLordID} {
-		deletePlacements := fmt.Sprintf("a=d,d=i,i=%d", imageID)
-		if !strings.Contains(view, deletePlacements) {
-			t.Fatalf("height-only resize retained Kitty image %d at its old coordinates", imageID)
+		if !strings.Contains(view, fmt.Sprintf("a=p,i=%d", imageID)) {
+			t.Fatalf("height-only resize did not redraw Kitty image %d at its new coordinates", imageID)
 		}
 	}
 }
@@ -441,7 +452,7 @@ func TestLeavingWorkRemovesLoomPlacement(t *testing.T) {
 	m.statuses["local"] = status
 
 	view := testView(m)
-	want := fmt.Sprintf("a=d,d=i,i=%d,q=2", kittyLoomID)
+	want := fmt.Sprintf("a=d,d=i,i=%d,p=", kittyLoomID)
 	if !strings.Contains(view, want) {
 		t.Fatalf("leaving work did not remove loom placement %q", want)
 	}
@@ -655,7 +666,7 @@ func TestRoleStateChangesReplaceOnlyTheirPlacements(t *testing.T) {
 		{key: lordAnimationKey(), previous: kittyLordID, replacement: kittyLordMapID},
 	} {
 		put := fmt.Sprintf("a=p,i=%d,p=", transition.replacement)
-		remove := fmt.Sprintf("a=d,d=i,i=%d,q=2", transition.previous)
+		remove := fmt.Sprintf("a=d,d=i,i=%d,p=", transition.previous)
 		putAt, removeAt := strings.Index(rendered, put), strings.Index(rendered, remove)
 		if putAt < 0 || removeAt < 0 || removeAt > putAt {
 			t.Fatalf("role transition %q placed image %d before deleting image %d", transition.key, transition.replacement, transition.previous)

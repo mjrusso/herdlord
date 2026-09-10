@@ -8,8 +8,8 @@ import (
 )
 
 func (m *Model) modalView(background, body string, maxWidth int) string {
-	// Every path drops the background, so it must still carry the background's Kitty deletes or its sprites stay on screen.
-	control := leadingKittyDeletes(background)
+	// Each return path drops the background, and must clear the pasture sprites itself.
+	control := m.pasture.ClearPlacements()
 	if m.width <= 0 || m.height <= 0 {
 		return control + body + "\n"
 	}
@@ -49,19 +49,6 @@ func (m *Model) modalView(background, body string, maxWidth int) string {
 		lines[y] = dim.Render(prefix) + panelLines[y-top] + dim.Render(suffix)
 	}
 	return control + strings.Join(lines, "\n")
-}
-
-func leadingKittyDeletes(value string) string {
-	const deletePrefix = "\x1b_Ga=d,"
-	end := 0
-	for strings.HasPrefix(value[end:], deletePrefix) {
-		terminator := strings.Index(value[end:], "\x1b\\")
-		if terminator < 0 {
-			break
-		}
-		end += terminator + 2
-	}
-	return value[:end]
 }
 
 func (m *Model) outputModalWidth() int {

@@ -188,9 +188,12 @@ type renderer interface {
 	render(Scene) string
 	enter() (string, error)
 	leave() string
+	clearPlacements() string
 }
 
 type asciiRenderer struct{}
+
+func (asciiRenderer) clearPlacements() string { return "" }
 
 func kittyGraphicsAvailable() bool {
 	if os.Getenv("HERDLORD_KITTY") == "1" {
@@ -370,6 +373,14 @@ func (p *State) Display(frame Frame) Display {
 		p.displayReady = true
 	}
 	return p.display
+}
+
+// ClearPlacements removes the pasture graphics so an overlay can draw over them.
+func (p *State) ClearPlacements() string {
+	if !p.visible {
+		return ""
+	}
+	return p.renderer.clearPlacements()
 }
 
 func (p *State) Control() string {

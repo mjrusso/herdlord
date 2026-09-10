@@ -23,7 +23,7 @@ func (m *Model) pastureFitNotice(frame pasture.Frame) string {
 }
 
 func (m *Model) openPasture() {
-	// The inspector is a table-mode panel, so measure the pasture against the rows it will reclaim.
+	// The pasture hides the inspector. Measure with those rows free.
 	frame := m.frameWithViews(m.frame.health, "").pasture
 	if notice := m.pastureFitNotice(frame); notice != "" {
 		m.setNotice(noticeInfo, notice)

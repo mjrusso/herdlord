@@ -74,3 +74,7 @@ func writeImagePlacementSource(out *strings.Builder, imageID int, placementID ui
 	fmt.Fprintf(&command, ",c=%d,r=%d,z=%d,C=1,q=2;\x1b\\", destination.columns, destination.rows, destination.z)
 	out.WriteString(positionKittyLayer(command.String(), destination.column, destination.row))
 }
+
+func writePlacementDelete(out *strings.Builder, imageID int, placementID uint32) {
+	fmt.Fprintf(out, "\x1b_Ga=d,d=i,i=%d,p=%d,q=2;\x1b\\", imageID, placementID)
+}

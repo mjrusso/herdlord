@@ -103,7 +103,7 @@ func (m *Model) rebuildRows() {
 			}
 		}
 	}
-	// The pasture defers the repaint, so tableCursor carries the tracked row until the table is shown again.
+	// tableCursor holds the tracked row while the pasture defers the repaint.
 	m.tableCursor = cursor
 	if m.pasture.Visible() {
 		m.tableDirty = true

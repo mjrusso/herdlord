@@ -230,7 +230,7 @@ func (c Client) Read(ctx context.Context, t target.Target, herdrPath, paneID str
 		herdrPath = "herdr"
 	}
 	out, err := c.read(ctx, t, herdrPath, paneID, lines, "recent-unwrapped")
-	// Herdr cannot capture alternate-screen history while an agent works, and offers the visible screen instead.
+	// Herdr cannot capture alternate-screen history while an agent works. It offers the visible screen.
 	if errorCode(err) == "agent_not_idle" {
 		return c.read(ctx, t, herdrPath, paneID, lines, "visible")
 	}

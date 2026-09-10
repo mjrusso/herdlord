@@ -35,8 +35,9 @@ type countingRenderer struct {
 	renders int
 }
 
-func (*countingRenderer) enter() (string, error) { return "", nil }
-func (*countingRenderer) leave() string          { return "" }
+func (*countingRenderer) enter() (string, error)  { return "", nil }
+func (*countingRenderer) leave() string           { return "" }
+func (*countingRenderer) clearPlacements() string { return "" }
 func (r *countingRenderer) render(Scene) string {
 	r.renders++
 	return "frame"
@@ -265,7 +266,7 @@ func TestPastureFrameReplaysStaticTiles(t *testing.T) {
 	view := testView(m)
 
 	for _, imageID := range []int{kittyGrassImageID, kittyDirtID, kittyFenceHorizID, kittyFenceVertID} {
-		if !strings.Contains(view, fmt.Sprintf("a=d,d=i,i=%d,q=2", imageID)) || !strings.Contains(view, fmt.Sprintf("a=p,i=%d", imageID)) {
+		if !strings.Contains(view, fmt.Sprintf("a=p,i=%d", imageID)) {
 			t.Fatalf("complete frame did not clear and redraw static image %d", imageID)
 		}
 	}
@@ -273,11 +274,13 @@ func TestPastureFrameReplaysStaticTiles(t *testing.T) {
 
 func TestKittyFrameKeepsAllGraphicsCommandsOnFirstLine(t *testing.T) {
 	m := physicsModel(t, []herdr.Agent{{PaneID: "p1", Status: "idle"}})
+	testView(m)
+	// A pose change produces a delete, which must share its line with the replacement.
+	m.statuses["local"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Status: "working"}}}
+	m.state.ReconcileAgents("local", m.statuses["local"])
 	view := testView(m)
-	deletion := fmt.Sprintf("a=d,d=i,i=%d,q=2", kittyGrassImageID)
-	replacement := fmt.Sprintf("a=p,i=%d", kittyGrassImageID)
 	lines := strings.Split(view, "\n")
-	if !strings.Contains(lines[0], deletion) || !strings.Contains(lines[0], replacement) {
+	if !strings.Contains(lines[0], "a=d,d=i,i=") || !strings.Contains(lines[0], "a=p,i=") {
 		t.Fatal("first line does not contain both the Kitty deletion and replacement")
 	}
 	for row, line := range lines[1:] {
@@ -397,7 +400,7 @@ func TestAgentCountChangeInvalidatesStaticPenGeometry(t *testing.T) {
 	}
 }
 
-func TestGridOffsetChangeInvalidatesStaticPenPlacements(t *testing.T) {
+func TestGridOffsetChangeRedrawsStaticPenPlacements(t *testing.T) {
 	m := physicsModel(t, []herdr.Agent{{PaneID: "p1", Status: "idle"}})
 	renderer := newKittyFrameRenderer()
 	width := contentWidth(m.width)
@@ -408,9 +411,8 @@ func TestGridOffsetChangeInvalidatesStaticPenPlacements(t *testing.T) {
 	grid.offsets[0]++
 	changed := renderer.render(m.buildSceneForTest(width, grid))
 
-	if !strings.Contains(changed, fmt.Sprintf("a=d,d=i,i=%d", kittyFenceHorizID)) ||
-		!strings.Contains(changed, fmt.Sprintf("a=p,i=%d", kittyFenceHorizID)) {
-		t.Fatal("changed pen origin did not clear and rebuild static fence placements")
+	if !strings.Contains(changed, fmt.Sprintf("a=p,i=%d", kittyFenceHorizID)) {
+		t.Fatal("changed pen origin did not redraw static fence placements")
 	}
 }
 
@@ -482,7 +484,7 @@ func TestAgentCountChangeRendersCompletePasture(t *testing.T) {
 	m.statuses["local"] = status
 	m.state.ReconcileAgents("local", status)
 	rendered := testView(m)
-	if !strings.Contains(rendered, fmt.Sprintf("a=d,d=i,i=%d,q=2", kittySheepImageID)) || !strings.Contains(rendered, fmt.Sprintf("a=p,i=%d", kittySheepImageID)) {
+	if !strings.Contains(rendered, fmt.Sprintf("a=p,i=%d", kittySheepImageID)) {
 		t.Fatal("agent count change did not produce a complete placement frame")
 	}
 }
@@ -533,7 +535,7 @@ func TestGateOverlapDoesNotCancelNewAgentEntrance(t *testing.T) {
 func TestPastureFrameClearsAndRebuildsFences(t *testing.T) {
 	m := physicsModel(t, []herdr.Agent{{PaneID: "p1", Status: "idle"}})
 	rendered := testView(m)
-	if !strings.Contains(rendered, fmt.Sprintf("a=d,d=i,i=%d,q=2", kittyFenceHorizID)) || !strings.Contains(rendered, fmt.Sprintf("a=p,i=%d", kittyFenceHorizID)) {
+	if !strings.Contains(rendered, fmt.Sprintf("a=p,i=%d", kittyFenceHorizID)) {
 		t.Fatal("pasture frame did not clear and rebuild horizontal fences")
 	}
 }
@@ -710,7 +712,8 @@ func TestKittyPageChangeImmediatelyClearsOffscreenActors(t *testing.T) {
 	grid = m.layout(width)
 	m.state.syncLayout(m.snapshot(), grid.penWidth, grid.heights)
 	changed := renderer.render(m.buildSceneForTest(width, grid))
-	for _, imageID := range []int{kittySheepImageID, kittyShepherdID, kittyLoomID} {
+	// Idle agents have no loom.
+	for _, imageID := range []int{kittySheepImageID, kittyShepherdID} {
 		if !strings.Contains(changed, fmt.Sprintf("a=d,d=i,i=%d", imageID)) {
 			t.Fatalf("page change retained offscreen image family %d", imageID)
 		}

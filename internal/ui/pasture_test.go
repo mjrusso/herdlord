@@ -242,7 +242,6 @@ func TestViewDoesNotAdvanceKittyRendererState(t *testing.T) {
 }
 
 func TestModalClearsPastureGraphicsWithoutReplayingThem(t *testing.T) {
-	// A terminal too narrow for the panel falls back to an unframed modal, which still has to clear the sprites.
 	for _, width := range []int{100, 40} {
 		m := New([]target.Target{{Name: "local"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{}, pasture.Kitty)
 		m.statuses["local"] = poll.TargetStatus{State: poll.OK}
@@ -490,13 +489,13 @@ func TestDeferredTableKeepsFocusedAgentAcrossReorder(t *testing.T) {
 		t.Fatalf("test setup did not focus p2: %+v", got)
 	}
 	m.openPasture()
-	// Blocked sorts ahead of idle, so p2 moves to the first row while the table is hidden.
+	// Blocked sorts ahead of idle. p2 moves to row 0 while the table is off screen.
 	m.statuses["local"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{
 		{PaneID: "p1", Agent: "aaa", Status: "idle"},
 		{PaneID: "p2", Agent: "bbb", Status: "blocked"},
 	}}
 	m.rebuildRows()
-	// A second hidden rebuild re-reads the focus identity, so the tracked row has to survive the first one.
+	// The second hidden rebuild re-reads focus, so the tracked row must survive the first.
 	m.statuses["local"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{
 		{PaneID: "p1", Agent: "aaa", Status: "working"},
 		{PaneID: "p2", Agent: "bbb", Status: "blocked"},

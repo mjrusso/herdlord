@@ -2,6 +2,7 @@ package pasture
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -13,30 +14,47 @@ import (
 	"github.com/mjrusso/herdlord/internal/poll"
 )
 
-type kittyRenderer struct{}
-
-type kittyFrameRenderer struct {
+type kittyRenderer struct {
 	placements    map[string]uint32
 	nextPlacement uint32
+	shown         map[uint32]int
+}
+
+type kittyFrameRenderer struct {
+	owner   *kittyRenderer
+	emitted map[uint32]int
 }
 
 type animationKey string
 
 func newKittyRenderer() *kittyRenderer {
-	return &kittyRenderer{}
+	return &kittyRenderer{placements: make(map[string]uint32), shown: make(map[uint32]int)}
+}
+
+func (r *kittyRenderer) frame() *kittyFrameRenderer {
+	return &kittyFrameRenderer{owner: r, emitted: make(map[uint32]int)}
 }
 
 func newKittyFrameRenderer() *kittyFrameRenderer {
-	return &kittyFrameRenderer{placements: make(map[string]uint32)}
+	return newKittyRenderer().frame()
 }
 
 func (r *kittyFrameRenderer) placementID(key string) uint32 {
-	if id := r.placements[key]; id != 0 {
+	if id := r.owner.placements[key]; id != 0 {
 		return id
 	}
-	r.nextPlacement++
-	r.placements[key] = r.nextPlacement
-	return r.nextPlacement
+	r.owner.nextPlacement++
+	r.owner.placements[key] = r.owner.nextPlacement
+	return r.owner.nextPlacement
+}
+
+func (r *kittyFrameRenderer) place(out *strings.Builder, imageID int, placementID uint32, destination placement) {
+	r.placeSource(out, imageID, placementID, destination, sourceRect{})
+}
+
+func (r *kittyFrameRenderer) placeSource(out *strings.Builder, imageID int, placementID uint32, destination placement, source sourceRect) {
+	r.emitted[placementID] = imageID
+	writeImagePlacementSource(out, imageID, placementID, destination, source)
 }
 
 func (r *kittyFrameRenderer) grassPlacementID(key string, column, row int) uint32 {
@@ -75,22 +93,27 @@ func kittyPurgeReservedImages() string {
 	return out.String()
 }
 
-func kittyDeletePlacements(class kittySpriteClass) string {
-	var out strings.Builder
-	for _, sprite := range kittySprites {
-		if sprite.active() && sprite.class&class != 0 {
-			fmt.Fprintf(&out, "\x1b_Ga=d,d=i,i=%d,q=2;\x1b\\", sprite.id)
-		}
-	}
-	return out.String()
-}
-
 func (r *kittyRenderer) enter() (string, error) {
 	uploads, err := kittyUploadSprites()
 	if err != nil {
 		return "", err
 	}
+	clear(r.shown)
 	return kittyPurgeReservedImages() + uploads, nil
+}
+
+// clearPlacements removes every placement but keeps r.shown: View can call it more than once per frame.
+func (r *kittyRenderer) clearPlacements() string {
+	var out strings.Builder
+	ids := make([]uint32, 0, len(r.shown))
+	for id := range r.shown {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		writePlacementDelete(&out, r.shown[id], id)
+	}
+	return out.String()
 }
 
 func (r *kittyRenderer) leave() string {
@@ -98,13 +121,14 @@ func (r *kittyRenderer) leave() string {
 }
 
 func (r *kittyRenderer) render(scene Scene) string {
-	return newKittyFrameRenderer().render(scene)
+	return r.frame().render(scene)
 }
 
 func (r *kittyFrameRenderer) render(scene Scene) string {
+	// owner.shown now holds the previous map. A clear() here empties both and silently stops every delete.
+	r.emitted = make(map[uint32]int, len(r.owner.shown))
 	contentWidth := scene.width
 	var placements strings.Builder
-	placements.WriteString(kittyDeletePlacements(kittyLayout | kittyForeground))
 	royalPlacements, royalCanvas := r.royalSceneLayers(scene)
 	placements.WriteString(royalPlacements)
 	sections := []string{royalCanvas}
@@ -150,7 +174,24 @@ func (r *kittyFrameRenderer) render(scene Scene) string {
 		placements.WriteString(positionKittyLayer(layer, 0, bottomTop))
 		sections = append(sections, blankKittyCanvas(contentWidth, scene.gridBottom))
 	}
-	return placements.String() + strings.Join(sections, "\n")
+	var deletes strings.Builder
+	r.writeStaleDeletes(&deletes)
+	r.owner.shown = r.emitted
+	return deletes.String() + placements.String() + strings.Join(sections, "\n")
+}
+
+// writeStaleDeletes removes placements this frame did not use: dropped actors and superseded poses.
+func (r *kittyFrameRenderer) writeStaleDeletes(out *strings.Builder) {
+	stale := make([]uint32, 0, len(r.owner.shown))
+	for id, imageID := range r.owner.shown {
+		if r.emitted[id] != imageID {
+			stale = append(stale, id)
+		}
+	}
+	slices.Sort(stale)
+	for _, id := range stale {
+		writePlacementDelete(out, r.owner.shown[id], id)
+	}
 }
 
 func (r *kittyFrameRenderer) royalScene(scene Scene) string {
@@ -162,18 +203,18 @@ func (r *kittyFrameRenderer) royalSceneLayers(scene Scene) (string, string) {
 	width := scene.width
 	roadCenters := scene.roadCenters
 	var out strings.Builder
-	writeImagePlacement(&out, kittyRoyalBgID, r.placementID("royal-background"), placement{columns: width, rows: royalSceneRows, z: -1})
+	r.place(&out, kittyRoyalBgID, r.placementID("royal-background"), placement{columns: width, rows: royalSceneRows, z: -1})
 	if len(roadCenters) > 0 {
 		firstRoad := roadCenters[0] - roadColumns/2
 		lastRoad := roadCenters[len(roadCenters)-1] - roadColumns/2
-		writeImagePlacement(&out, kittyRoadHorizID, r.placementID("royal-road-horizontal"), placement{column: firstRoad, row: royalSceneRows - royalRoadRows, columns: lastRoad - firstRoad + roadColumns, rows: royalRoadRows})
+		r.place(&out, kittyRoadHorizID, r.placementID("royal-road-horizontal"), placement{column: firstRoad, row: royalSceneRows - royalRoadRows, columns: lastRoad - firstRoad + roadColumns, rows: royalRoadRows})
 		for column, center := range roadCenters {
 			x := center - roadColumns/2
-			writeImagePlacement(&out, kittyRoadVertID, r.placementID(fmt.Sprintf("royal-road-%d", column)), placement{column: x, row: royalSceneRows - royalRoadRows, columns: roadColumns, rows: royalRoadRows})
+			r.place(&out, kittyRoadVertID, r.placementID(fmt.Sprintf("royal-road-%d", column)), placement{column: x, row: royalSceneRows - royalRoadRows, columns: roadColumns, rows: royalRoadRows})
 		}
 	}
 	castleWidth, castleColumn, castleRow := scene.castle.width, scene.castle.x, scene.castle.y
-	writeImagePlacementSource(&out, kittyCastleID, r.placementID("royal-castle"), placement{column: castleColumn, row: castleRow, columns: castleWidth, rows: scene.castle.height}, sourceRect{x: castleSourceX, y: castleSourceY, width: castleSourceWidth, height: castleSourceHeight})
+	r.placeSource(&out, kittyCastleID, r.placementID("royal-castle"), placement{column: castleColumn, row: castleRow, columns: castleWidth, rows: scene.castle.height}, sourceRect{x: castleSourceX, y: castleSourceY, width: castleSourceWidth, height: castleSourceHeight})
 	lordWidth := min(lordColumns, width)
 	lordColumn, lordRow := scene.lord.position.x, scene.lord.position.y
 	r.writeAnimatedImagePlacement(&out, lordAnimationKey(), kittyPoseImageIDs[scene.lord.pose], lordColumn, lordRow, lordWidth, lordRows, 1)
@@ -199,13 +240,13 @@ func (r *kittyFrameRenderer) gridRowBackground(width, rowIndex int, row rowScene
 	centers := row.roadCenters
 	firstRoad := centers[0] - roadColumns/2
 	lastRoad := centers[len(centers)-1] - roadColumns/2
-	writeImagePlacement(&out, kittyRoadHorizID, r.placementID(fmt.Sprintf("grid-road-horizontal-%d", rowIndex)), placement{column: firstRoad, columns: lastRoad - firstRoad + roadColumns, rows: royalRoadRows, z: -1})
+	r.place(&out, kittyRoadHorizID, r.placementID(fmt.Sprintf("grid-road-horizontal-%d", rowIndex)), placement{column: firstRoad, columns: lastRoad - firstRoad + roadColumns, rows: royalRoadRows, z: -1})
 	for i, center := range centers {
 		length := row.pens[i].bounds.y - row.top
 		if length == 0 {
 			continue
 		}
-		writeImagePlacement(&out, kittyRoadVertID, r.placementID(fmt.Sprintf("grid-road-%d-%d", rowIndex, i)), placement{column: center - roadColumns/2, columns: roadColumns, rows: length, z: -1})
+		r.place(&out, kittyRoadVertID, r.placementID(fmt.Sprintf("grid-road-%d-%d", rowIndex, i)), placement{column: center - roadColumns/2, columns: roadColumns, rows: length, z: -1})
 	}
 	return out.String()
 }
@@ -217,7 +258,7 @@ func (r *kittyFrameRenderer) gridPaddingPlacements(width, height int, key string
 	var out strings.Builder
 	r.writeGrassField(&out, "grid-padding-"+key, width, height, -3)
 	for index, center := range roadCenters {
-		writeImagePlacement(&out, kittyRoadVertID, r.placementID(fmt.Sprintf("grid-padding-road-%s-%d", key, index)), placement{column: center - roadColumns/2, columns: roadColumns, rows: height, z: -1})
+		r.place(&out, kittyRoadVertID, r.placementID(fmt.Sprintf("grid-padding-road-%s-%d", key, index)), placement{column: center - roadColumns/2, columns: roadColumns, rows: height, z: -1})
 	}
 	return out.String()
 }
@@ -371,11 +412,11 @@ func (r *kittyFrameRenderer) placementLayerScene(pen penScene) string {
 	r.writeGrassField(&out, targetName, width, height, -2)
 	r.writeWorkyardPlacements(&out, targetName, pen.workyard)
 	roadColumn := max(0, gateCenter(width)-roadColumns/2)
-	writeImagePlacement(&out, kittyRoadVertID, r.placementID(targetName+"\x00approach-road"), placement{column: roadColumn, columns: min(roadColumns, width), rows: top, z: -1})
+	r.place(&out, kittyRoadVertID, r.placementID(targetName+"\x00approach-road"), placement{column: roadColumn, columns: min(roadColumns, width), rows: top, z: -1})
 	signColumn, signColumns := targetSignLayout(width)
-	writeImagePlacement(&out, kittyTargetSignID, r.placementID(targetName+"\x00sign"), placement{column: signColumn, row: 1, columns: signColumns, rows: targetSignRows, z: -1})
+	r.place(&out, kittyTargetSignID, r.placementID(targetName+"\x00sign"), placement{column: signColumn, row: 1, columns: signColumns, rows: targetSignRows, z: -1})
 	r.writeFencePlacements(&out, targetName, width, height)
-	writeImagePlacement(&out, kittyFenceGateID, r.placementID(targetName+"\x00gate"), placement{column: gateColumn(width), row: top, columns: gateColumns, rows: fenceRows, z: 2})
+	r.place(&out, kittyFenceGateID, r.placementID(targetName+"\x00gate"), placement{column: gateColumn(width), row: top, columns: gateColumns, rows: fenceRows, z: 2})
 	shepherdKey := shepherdAnimationKey(targetName)
 	r.writeAnimatedImagePlacement(&out, shepherdKey, kittyPoseImageIDs[pen.shepherd.pose], pen.shepherd.position.x, pen.shepherd.position.y, sheepColumns, shepherdRows, 1)
 	for _, loom := range pen.looms {
@@ -395,7 +436,7 @@ func (r *kittyFrameRenderer) writeGrassField(out *strings.Builder, key string, w
 		for column := 0; column < width; column += grassTileColumns {
 			columns := min(grassTileColumns, width-column)
 			id := r.grassPlacementID(key, column, row)
-			writeImagePlacementSource(out, kittyGrassImageID, id, placement{column: column, row: row, columns: columns, rows: rows, z: z}, sourceRect{width: grassTilePixels * columns / grassTileColumns, height: grassTilePixels * rows / grassTileRows})
+			r.placeSource(out, kittyGrassImageID, id, placement{column: column, row: row, columns: columns, rows: rows, z: z}, sourceRect{width: grassTilePixels * columns / grassTileColumns, height: grassTilePixels * rows / grassTileRows})
 		}
 	}
 }
@@ -418,7 +459,7 @@ func lordAnimationKey() animationKey {
 
 func (r *kittyFrameRenderer) writeWorkyardPlacements(out *strings.Builder, targetName string, workyard sceneRect) {
 	id := r.dirtPlacementID(targetName)
-	writeImagePlacement(out, kittyDirtID, id, placement{column: workyard.x, row: workyard.y, columns: workyard.width, rows: workyard.height, z: -1})
+	r.place(out, kittyDirtID, id, placement{column: workyard.x, row: workyard.y, columns: workyard.width, rows: workyard.height, z: -1})
 }
 
 func (r *kittyFrameRenderer) writeFencePlacements(out *strings.Builder, targetName string, width, height int) {
@@ -430,7 +471,7 @@ func (r *kittyFrameRenderer) writeFencePlacements(out *strings.Builder, targetNa
 		rows := min(fenceTileRows, height-row)
 		for _, column := range []int{0, width - fenceColumns} {
 			id := r.placementID(fmt.Sprintf("%s\x00fence-v\x00%d\x00%d", targetName, column, row))
-			writeImagePlacementSource(out, kittyFenceVertID, id, placement{column: column, row: row, columns: fenceColumns, rows: rows, z: 2}, sourceRect{width: 64, height: 128 * rows / fenceTileRows})
+			r.placeSource(out, kittyFenceVertID, id, placement{column: column, row: row, columns: fenceColumns, rows: rows, z: 2}, sourceRect{width: 64, height: 128 * rows / fenceTileRows})
 		}
 	}
 }
@@ -439,7 +480,7 @@ func (r *kittyFrameRenderer) writeHorizontalFence(out *strings.Builder, targetNa
 	for column := start; column < end; column += fenceTileColumns {
 		columns := min(fenceTileColumns, end-column)
 		id := r.placementID(fmt.Sprintf("%s\x00fence-h\x00%d\x00%d", targetName, column, row))
-		writeImagePlacementSource(out, kittyFenceHorizID, id, placement{column: column, row: row, columns: columns, rows: fenceRows, z: 2}, sourceRect{width: 128 * columns / fenceTileColumns, height: 64})
+		r.placeSource(out, kittyFenceHorizID, id, placement{column: column, row: row, columns: columns, rows: fenceRows, z: 2}, sourceRect{width: 128 * columns / fenceTileColumns, height: 64})
 	}
 }
 
@@ -448,5 +489,5 @@ func (r *kittyFrameRenderer) animatedPlacementID(key animationKey, imageID int) 
 }
 
 func (r *kittyFrameRenderer) writeAnimatedImagePlacement(out *strings.Builder, key animationKey, imageID, column, row, columns, rows, z int) {
-	writeImagePlacement(out, imageID, r.animatedPlacementID(key, imageID), placement{column: column, row: row, columns: columns, rows: rows, z: z})
+	r.place(out, imageID, r.animatedPlacementID(key, imageID), placement{column: column, row: row, columns: columns, rows: rows, z: z})
 }
