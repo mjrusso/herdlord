@@ -34,6 +34,36 @@ func TestParsePrefix(t *testing.T) {
 	}
 }
 
+func TestPollingIdentityIgnoresAttachAndPauseSettings(t *testing.T) {
+	base := Target{Name: "box", Prefix: []string{"ssh", "box", "--"}}
+	changed := base
+	changed.Interactive = []string{"ssh", "-t", "box", "--"}
+	changed.Paused = true
+	if !base.SamePollingIdentity(changed) {
+		t.Fatal("attach and pause settings changed polling identity")
+	}
+	changed.Name = "other"
+	if base.SamePollingIdentity(changed) {
+		t.Fatal("name did not change polling identity")
+	}
+	changed.Name = base.Name
+	changed.Prefix = []string{"ssh", "other", "--"}
+	if base.SamePollingIdentity(changed) {
+		t.Fatal("command prefix did not change polling identity")
+	}
+}
+
+func TestInteractiveIdentityPreservesNilAndEmptyDistinction(t *testing.T) {
+	base := Target{Interactive: nil}
+	if base.SameInteractiveIdentity(Target{Interactive: []string{}}) {
+		t.Fatal("nil and empty interactive prefixes have the same identity")
+	}
+	wanted := Target{Interactive: []string{"ssh", "-t", "box", "--"}}
+	if !wanted.SameInteractiveIdentity(Target{Interactive: append([]string(nil), wanted.Interactive...)}) {
+		t.Fatal("equal interactive prefixes have different identities")
+	}
+}
+
 func TestMutateSerializesConcurrentWriters(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "targets.json")
 	const writers = 12

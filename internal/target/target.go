@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/mattn/go-shellwords"
@@ -24,6 +25,14 @@ func (t Target) InteractivePrefix() []string {
 		return t.Interactive
 	}
 	return t.Prefix
+}
+
+func (t Target) SamePollingIdentity(other Target) bool {
+	return t.Name == other.Name && slices.Equal(t.Prefix, other.Prefix)
+}
+
+func (t Target) SameInteractiveIdentity(other Target) bool {
+	return (t.Interactive == nil) == (other.Interactive == nil) && slices.Equal(t.Interactive, other.Interactive)
 }
 
 func ParsePrefix(input string) ([]string, error) {
