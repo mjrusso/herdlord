@@ -14,10 +14,18 @@ import (
 	"github.com/mjrusso/herdlord/internal/poll"
 )
 
+const kittyPlacementDeleteRetries = 3
+
+type stalePlacement struct {
+	imageID int
+	retries int
+}
+
 type kittyRenderer struct {
 	placements    map[string]uint32
 	nextPlacement uint32
 	shown         map[uint32]int
+	stale         map[uint32]stalePlacement
 }
 
 type kittyFrameRenderer struct {
@@ -28,7 +36,7 @@ type kittyFrameRenderer struct {
 type animationKey string
 
 func newKittyRenderer() *kittyRenderer {
-	return &kittyRenderer{placements: make(map[string]uint32), shown: make(map[uint32]int)}
+	return &kittyRenderer{placements: make(map[string]uint32), shown: make(map[uint32]int), stale: make(map[uint32]stalePlacement)}
 }
 
 func (r *kittyRenderer) frame() *kittyFrameRenderer {
@@ -99,6 +107,7 @@ func (r *kittyRenderer) enter() (string, error) {
 		return "", err
 	}
 	clear(r.shown)
+	clear(r.stale)
 	return kittyPurgeReservedImages() + uploads, nil
 }
 
@@ -154,7 +163,10 @@ func (r *kittyFrameRenderer) render(scene Scene) string {
 				pens = append(pens, strings.Repeat(" ", penGapColumns))
 			}
 			penOffset := penScene.bounds.y - row.top
-			placements.WriteString(positionKittyLayer(r.placementLayerScene(penScene), penScene.bounds.x, penScene.bounds.y))
+			// positionKittyLayer ignores a negative row, which would put the pen at the top of the screen.
+			if penScene.bounds.x >= 0 && penScene.bounds.y >= 0 {
+				placements.WriteString(positionKittyLayer(r.placementLayerScene(penScene), penScene.bounds.x, penScene.bounds.y))
+			}
 			pens = append(pens, strings.Repeat("\n", penOffset)+renderPenCanvasScene(penScene, scene.tick))
 		}
 		rowView := lipgloss.JoinHorizontal(lipgloss.Top, pens...)
@@ -182,15 +194,29 @@ func (r *kittyFrameRenderer) render(scene Scene) string {
 
 // writeStaleDeletes removes placements this frame did not use: dropped actors and superseded poses.
 func (r *kittyFrameRenderer) writeStaleDeletes(out *strings.Builder) {
-	stale := make([]uint32, 0, len(r.owner.shown))
 	for id, imageID := range r.owner.shown {
 		if r.emitted[id] != imageID {
-			stale = append(stale, id)
+			r.owner.stale[id] = stalePlacement{imageID: imageID, retries: kittyPlacementDeleteRetries}
 		}
 	}
-	slices.Sort(stale)
-	for _, id := range stale {
-		writePlacementDelete(out, r.owner.shown[id], id)
+	ids := make([]uint32, 0, len(r.owner.stale))
+	for id := range r.owner.stale {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		entry := r.owner.stale[id]
+		if r.emitted[id] == entry.imageID {
+			delete(r.owner.stale, id)
+			continue
+		}
+		writePlacementDelete(out, entry.imageID, id)
+		entry.retries--
+		if entry.retries <= 0 {
+			delete(r.owner.stale, id)
+		} else {
+			r.owner.stale[id] = entry
+		}
 	}
 }
 

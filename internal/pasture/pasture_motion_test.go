@@ -2,6 +2,7 @@ package pasture
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -302,6 +303,35 @@ func TestKittyFrameClearsTheSupersededSheepPose(t *testing.T) {
 	}
 	if !cleared {
 		t.Fatal("pose change did not clear the sheep's previous placement")
+	}
+}
+
+func TestKittyRepeatsDeletesForSeveralFrames(t *testing.T) {
+	m := physicsModel(t, []herdr.Agent{{PaneID: "p1", Status: "idle"}, {PaneID: "p2", Status: "idle"}})
+	testView(m)
+	m.statuses["local"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Status: "idle"}}}
+	for range 2 {
+		m.state.ReconcileAgents("local", m.statuses["local"])
+	}
+	for range deathAnimationSteps + 1 {
+		m.advanceState(m.snapshot())
+	}
+	first := testView(m)
+	gone := regexp.MustCompile(`a=d,d=i,i=\d+,p=(\d+)`).FindAllStringSubmatch(first, -1)
+	if len(gone) == 0 {
+		t.Fatal("removing an agent produced no delete")
+	}
+	repeated := testView(m)
+	for _, match := range gone {
+		if !strings.Contains(repeated, "p="+match[1]+",q=2") {
+			t.Fatalf("delete of placement %s was not repeated on the next frame", match[1])
+		}
+	}
+	for range kittyPlacementDeleteRetries {
+		testView(m)
+	}
+	if settled := testView(m); strings.Contains(settled, "a=d,d=i") {
+		t.Fatal("deletes repeated past their retry budget")
 	}
 }
 
