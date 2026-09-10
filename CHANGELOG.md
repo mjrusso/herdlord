@@ -10,6 +10,8 @@
   `HERDLORD_RENDERER` or `HERDLORD_KITTY` to override the automatic choice.
 - Add `herdlord demo` to open the dashboard with simulated targets and agents.
 - Add an activity row that reports recent target and agent changes.
+- Read the visible screen when an agent is working and Herdr cannot capture its
+  alternate-screen history, instead of reporting a read error.
 
 ## v0.1.2 - 2026-09-08
 

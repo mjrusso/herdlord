@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -234,6 +235,47 @@ func TestReadUsesResolvedPath(t *testing.T) {
 	got, err := client.Read(context.Background(), target.Target{}, "/opt/herdr", "w1:p1", 12)
 	if err != nil || got != "recent output" {
 		t.Fatalf("Read() = %q, %v", got, err)
+	}
+}
+
+func notIdleError() error {
+	return &CommandError{
+		Stderr: `{"error":{"code":"agent_not_idle","message":"cannot read 120 lines while w1:p1 is working"},"id":"cli:agent:read"}`,
+		Err:    errors.New("exit status 1"),
+	}
+}
+
+func TestReadFallsBackToVisibleWhileAgentWorks(t *testing.T) {
+	var sources []string
+	client := Client{Runner: runnerFunc(func(_ context.Context, argv []string) (string, error) {
+		source := argv[slices.Index(argv, "--source")+1]
+		sources = append(sources, source)
+		if source == "recent-unwrapped" {
+			return "", notIdleError()
+		}
+		return "visible output", nil
+	})}
+	got, err := client.Read(context.Background(), target.Target{}, "herdr", "w1:p1", 120)
+	if err != nil || got != "visible output" {
+		t.Fatalf("Read() = %q, %v", got, err)
+	}
+	if want := []string{"recent-unwrapped", "visible"}; !slices.Equal(sources, want) {
+		t.Fatalf("sources = %v, want %v", sources, want)
+	}
+}
+
+func TestReadReportsErrorsOtherThanNotIdle(t *testing.T) {
+	calls := 0
+	failure := &CommandError{Stderr: `{"error":{"code":"agent_not_found"}}`, Err: errors.New("exit status 1")}
+	client := Client{Runner: runnerFunc(func(context.Context, []string) (string, error) {
+		calls++
+		return "", failure
+	})}
+	if _, err := client.Read(context.Background(), target.Target{}, "herdr", "w1:p1", 120); !errors.Is(err, failure) {
+		t.Fatalf("Read() error = %v, want the original failure", err)
+	}
+	if calls != 1 {
+		t.Fatalf("read attempted %d times, want 1", calls)
 	}
 }
 

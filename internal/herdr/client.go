@@ -229,7 +229,32 @@ func (c Client) Read(ctx context.Context, t target.Target, herdrPath, paneID str
 	if herdrPath == "" {
 		herdrPath = "herdr"
 	}
-	return c.runner().Run(ctx, Command(t.Prefix, herdrPath, "agent", "read", paneID, "--source", "recent-unwrapped", "--lines", strconv.Itoa(lines), "--format", "text"))
+	out, err := c.read(ctx, t, herdrPath, paneID, lines, "recent-unwrapped")
+	// Herdr cannot capture alternate-screen history while an agent works, and offers the visible screen instead.
+	if errorCode(err) == "agent_not_idle" {
+		return c.read(ctx, t, herdrPath, paneID, lines, "visible")
+	}
+	return out, err
+}
+
+func (c Client) read(ctx context.Context, t target.Target, herdrPath, paneID string, lines int, source string) (string, error) {
+	return c.runner().Run(ctx, Command(t.Prefix, herdrPath, "agent", "read", paneID, "--source", source, "--lines", strconv.Itoa(lines), "--format", "text"))
+}
+
+func errorCode(err error) string {
+	var commandErr *CommandError
+	if !errors.As(err, &commandErr) {
+		return ""
+	}
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(commandErr.Stderr), &payload) != nil {
+		return ""
+	}
+	return payload.Error.Code
 }
 
 func Command(prefix []string, herdrPath string, args ...string) []string {
