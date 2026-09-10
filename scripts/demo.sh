@@ -99,13 +99,13 @@ up() {
     done
     configure_targets
     printf 'Demo ready.\nConfig: %s\n\n' "$config_path"
-    printf 'Open a session with: just demo-session a\n'
-    printf 'Open Herdlord with:  just demo\n'
+    printf 'Open a session with: just live-demo-session a\n'
+    printf 'Open Herdlord with:  just live-demo\n'
 }
 
 run() {
     require_tools
-    [[ -f $owner_path && -f $config_path ]] || { printf 'run just demo or just demo-session a first\n' >&2; exit 1; }
+    [[ -f $owner_path && -f $config_path ]] || { printf 'run just live-demo or just live-demo-session a first\n' >&2; exit 1; }
     exec "$binary" --config "$config_path" --interval 500ms --timeout 3s
 }
 
@@ -151,27 +151,27 @@ down() {
 attach() {
     local name
     name=$(session_name "${1:-}")
-    [[ -f $owner_path ]] || { printf 'run just demo or just demo-session a first\n' >&2; exit 1; }
+    [[ -f $owner_path ]] || { printf 'run just live-demo or just live-demo-session a first\n' >&2; exit 1; }
     exec herdr session attach "$name"
 }
 
 stop() {
     local name
     name=$(session_name "${1:-}")
-    [[ -f $owner_path ]] || { printf 'run just demo or just demo-session a first\n' >&2; exit 1; }
+    [[ -f $owner_path ]] || { printf 'run just live-demo or just live-demo-session a first\n' >&2; exit 1; }
     herdr session stop "$name"
     printf 'Stopped %s. Herdlord will show its backoff state.\n' "$name"
 }
 
 start() {
     require_tools
-    [[ -f $owner_path ]] || { printf 'run just demo or just demo-session a first\n' >&2; exit 1; }
+    [[ -f $owner_path ]] || { printf 'run just live-demo or just live-demo-session a first\n' >&2; exit 1; }
     start_session "$(session_name "${1:-}")"
 }
 
 toggle() {
     require_tools
-    [[ -f $owner_path ]] || { printf 'run just demo or just demo-session a first\n' >&2; exit 1; }
+    [[ -f $owner_path ]] || { printf 'run just live-demo or just live-demo-session a first\n' >&2; exit 1; }
     local name
     name=$(session_name "${1:-}")
     if session_running "$name"; then

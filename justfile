@@ -43,17 +43,20 @@ smoke: build
     ./{{bin_dir}}/{{binary}} --help
 
 demo: build
+    ./{{bin_dir}}/{{binary}} demo
+
+live-demo: build
     scripts/demo.sh up
     scripts/demo.sh run
 
-demo-session session: build
+live-demo-session session: build
     scripts/demo.sh up
     scripts/demo.sh attach '{{session}}'
 
-demo-toggle session: build
+live-demo-toggle session: build
     scripts/demo.sh toggle '{{session}}'
 
-demo-down: build
+live-demo-down: build
     scripts/demo.sh down
 
 release-snapshot-check:

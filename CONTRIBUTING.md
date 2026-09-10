@@ -36,9 +36,9 @@ The demo recipes create two healthy named sessions, an intentionally offline
 target, and a disposable Herdlord configuration. Use three terminals:
 
 ```sh
-just demo-session a
-just demo-session b
-just demo
+just live-demo-session a
+just live-demo-session b
+just live-demo
 ```
 
 Run the session commands in separate terminals to create workspaces and agents.
@@ -46,15 +46,15 @@ The dashboard uses a short polling interval and is ready for manual testing or
 screenshots. Stop and restart one session to exercise backoff and recovery:
 
 ```sh
-just demo-toggle b
-just demo-toggle b
+just live-demo-toggle b
+just live-demo-toggle b
 ```
 
 The first command stops session B; the second restarts it. Remove the
 environment with:
 
 ```sh
-just demo-down
+just live-demo-down
 ```
 
 Demo state defaults to `.herdlord-test/demo` in the repository. Set
@@ -152,10 +152,11 @@ rm -f /tmp/herdlord-targets.json /tmp/herdlord-targets.json.lock
 | `just scripts-check`          | Syntax-check the release scripts.                                 |
 | `just skill-check`            | Validate the embedded agent skill against the command tree.       |
 | `just smoke`                  | Build the binary and run its version and help commands.           |
-| `just demo`                   | Set up and open the local demo dashboard.                         |
-| `just demo-session a`         | Set up and attach to demo session `a` or `b`.                     |
-| `just demo-toggle b`          | Stop or restart a session to test failure and recovery.           |
-| `just demo-down`              | Delete owned demo sessions and disposable state.                  |
+| `just demo`                   | Open the deterministic in-memory demo.                            |
+| `just live-demo`              | Set up and open the live multi-session test dashboard.            |
+| `just live-demo-session a`    | Set up and attach to live test session `a` or `b`.                |
+| `just live-demo-toggle b`     | Stop or restart a live session to test recovery.                  |
+| `just live-demo-down`         | Delete owned live sessions and disposable state.                  |
 | `just release-snapshot-check` | Build, verify, and smoke-test snapshot release archives.          |
 | `just nix-check`              | Check the flake, build `.#herdlord`, and run the Nix binary.      |
 | `just release-prep vX.Y.Z`    | Validate release notes and run the local release checks.          |
