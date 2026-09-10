@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add a pasture dashboard view that shows each target as a fenced pen and each
+  agent as an animated sheep. Press `v` to switch between the table and the
+  pasture.
+- Draw the pasture with Kitty graphics in Kitty and Ghostty, and with an ASCII
+  renderer in other terminals. Press `R` to switch renderers. Set
+  `HERDLORD_RENDERER` or `HERDLORD_KITTY` to override the automatic choice.
+- Add `herdlord demo` to open the dashboard with simulated targets and agents.
+- Add an activity row that reports recent target and agent changes.
+
 ## v0.1.2 - 2026-09-08
 
 - Support Herdr 0.9.0 and protocol 22.

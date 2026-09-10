@@ -22,6 +22,18 @@ session.
 
 ![Herdlord dashboard monitoring agents across multiple Herdr sessions](assets/herdlord-dashboard.png)
 
+Herdlord also has an experimental (read: _buggy!_) pasture view, which shows
+each target as a fenced pen and each agent as a sheep. Press `v` in the
+dashboard to switch to it, or run `herdlord demo` to try it without a Herdr
+session. In supported terminal emulators, the pasture renders using the [Kitty
+Graphics Protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/):
+
+![Herdlord pasture rendering using the Kitty Graphics Protocol](assets/herdlord-pasture-kitty.png)
+
+Other terminals fall back to an ASCII renderer:
+
+![Herdlord pasture rendering using ASCII art](assets/herdlord-pasture-ascii.png)
+
 ## Installation
 
 ### Install a release build
@@ -130,6 +142,17 @@ herdlord targets add remote \
 Agents from both sessions appear together with their Herdr workspace and tab
 labels. Agents that need attention appear first.
 
+## Demo
+
+Run `herdlord demo` to open the dashboard with in-memory targets and agents. No
+Herdr session is needed. It starts paused with two agents in each state. Press
+`p` to start or pause the fixed event sequence. The sequence adds, removes,
+moves, and changes agents. Press `t` to add, edit, pause, resume, or remove
+simulated targets with the normal target manager. No coding agents run during
+the demo.
+
+From a checkout, `just demo` builds the binary and runs the same command.
+
 ## Dashboard
 
 ### Controls
@@ -143,9 +166,11 @@ Run `herdlord`, then use these keys:
 | `Page Up`, `b`, `M-v`   | Move one page up.                                              |
 | `Page Down`, `f`, `C-v` | Move one page down.                                            |
 | `C-u`, `C-d`            | Move half a page up or down.                                   |
-| `Home`, `g`             | Select the first row.                                          |
-| `End`, `G`              | Select the last row.                                           |
+| `Home`, `g`             | Select the first row or pen.                                   |
+| `End`, `G`              | Select the last row or pen.                                    |
 | `t`                     | Open target management.                                        |
+| `v`                     | Switch between the table and pasture.                          |
+| `R`                     | Switch pasture renderers.                                      |
 | `Enter`                 | Review and confirm attachment to the selected agent.           |
 | `i`                     | Toggle the selected agent's inspector.                         |
 | `o`                     | Expand and scroll the selected agent's recent terminal output. |
@@ -153,8 +178,30 @@ Run `herdlord`, then use these keys:
 | `?`                     | Show every key binding.                                        |
 | `q`                     | Quit from the dashboard.                                       |
 
+`Enter`, `i`, and `o` act on the selected table row and do nothing in the
+pasture.
+
+The activity row reports recent target and agent changes. The newest event is
+shown first, and older events continue across the row until the available width
+is filled.
+
 Press `Esc` to close a panel or cancel a form. `Ctrl-C` quits from every
 screen.
+
+### Pasture
+
+In the pasture, idle agents mostly rest and occasionally take a short walk.
+Working and blocked agents use distinct animations, completed agents sleep, new
+agents enter through the gate, and removed agents play a brief departure
+animation. Each target has a fenced pen, sign, work area, and shepherd. Roads
+connect the responsive pen grid to the shared castle and lord. Temporary speech
+bubbles report agent, target, and fleet changes.
+
+The pasture uses Kitty graphics in Kitty and Ghostty. Other terminals use an
+ASCII renderer. Set `HERDLORD_RENDERER=ascii` or `HERDLORD_RENDERER=kitty` to
+override automatic selection. `HERDLORD_KITTY=1` remains available for remote
+sessions that support Kitty graphics without advertising it. Press `R` in the
+pasture to switch renderers without resetting the scene.
 
 ### Agent inspection and attachment
 
