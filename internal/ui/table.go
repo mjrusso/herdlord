@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/table"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/mjrusso/herdlord/internal/display"
@@ -67,12 +68,12 @@ func (m *Model) rebuildRows() {
 			if s.State.Usable() {
 				status = "no agents"
 			}
-			rows = append(rows, row{target: t.Name, values: m.rowValues(t.Name, nil, status, s.Err)})
+			rows = append(rows, row{target: t.Name, status: status, detail: s.Err})
 			continue
 		}
 		for i := range s.Agents {
 			a := s.Agents[i]
-			rows = append(rows, row{target: t.Name, agent: &a, values: m.rowValues(t.Name, &a, a.Status, "")})
+			rows = append(rows, row{target: t.Name, agent: &a, status: a.Status})
 		}
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
@@ -89,20 +90,28 @@ func (m *Model) rebuildRows() {
 		return rows[i].agent.Agent < rows[j].agent.Agent
 	})
 	m.rows = rows
-	values := make([]table.Row, len(rows))
-	for i := range rows {
-		values[i] = rows[i].values
+	cursor := m.table.Cursor()
+	cursor = min(max(0, cursor), max(0, len(rows)-1))
+	if focusedTarget != "" {
+		for i := range rows {
+			if rows[i].target != focusedTarget {
+				continue
+			}
+			if focusedPane == "" || (rows[i].agent != nil && rows[i].agent.PaneID == focusedPane) {
+				cursor = i
+				break
+			}
+		}
 	}
-	m.table.SetRows(values)
-	if len(rows) > 0 && m.table.Cursor() < 0 {
-		m.table.SetCursor(0)
+	// The pasture defers the repaint, so tableCursor carries the tracked row until the table is shown again.
+	m.tableCursor = cursor
+	if m.pasture.Visible() {
+		m.tableDirty = true
+	} else {
+		m.setTableRows(cursor)
 	}
-	m.restoreFocus(focusedTarget, focusedPane)
-	m.updateSelectionMarkers()
-	m.updateTableHeight()
 	if len(rows) == 0 {
-		m.outputKey, m.output, m.outputLoading = "", "", false
-		m.loadingKey, m.loadingRev = "", 0
+		m.output.clear()
 	}
 }
 
@@ -115,21 +124,6 @@ func (m *Model) focusIdentity() (string, string) {
 		return focused.target, ""
 	}
 	return focused.target, focused.agent.PaneID
-}
-
-func (m *Model) restoreFocus(targetName, paneID string) {
-	if targetName == "" {
-		return
-	}
-	for i := range m.rows {
-		if m.rows[i].target != targetName {
-			continue
-		}
-		if paneID == "" || (m.rows[i].agent != nil && m.rows[i].agent.PaneID == paneID) {
-			m.table.SetCursor(i)
-			return
-		}
-	}
 }
 
 func (m *Model) rowValues(targetName string, agent *herdr.Agent, status, detail string) []string {
@@ -150,24 +144,33 @@ func (m *Model) rowValues(targetName string, agent *herdr.Agent, status, detail 
 }
 
 func (m *Model) updateSelectionMarkers() {
+	m.setTableRows(m.table.Cursor())
+}
+
+func (m *Model) setTableRows(cursor int) {
+	m.tableCursor = cursor
 	values := make([]table.Row, len(m.rows))
 	for i := range m.rows {
-		rowValues := append([]string(nil), m.rows[i].values...)
+		rowValues := m.rowValues(m.rows[i].target, m.rows[i].agent, m.rows[i].status, m.rows[i].detail)
 		marker := attentionMarker(m.rows[i].agent)
 		if m.rows[i].agent == nil {
 			marker = "◇"
 		}
-		cursor := " "
-		if i == m.table.Cursor() {
-			cursor = ">"
+		cursorMarker := " "
+		if i == cursor {
+			cursorMarker = ">"
 		}
-		rowValues[0] = cursor + " " + marker
-		if i != m.table.Cursor() && m.rows[i].agent != nil && m.rows[i].agent.Status == "working" {
+		rowValues[0] = cursorMarker + " " + marker
+		if i != cursor && m.rows[i].agent != nil && m.rows[i].agent.Status == "working" {
 			rowValues[m.statusColumnIndex()] = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render("working")
 		}
 		values[i] = rowValues
 	}
 	m.table.SetRows(values)
+	if m.table.Cursor() != cursor {
+		m.table.SetCursor(cursor)
+	}
+	m.tableDirty = false
 }
 
 func (m *Model) statusColumnIndex() int {
@@ -255,46 +258,6 @@ func label(s poll.TargetStatus) string {
 	}
 }
 
-func colorLabel(state poll.State, value string) string {
-	var color lipgloss.Color
-	switch state {
-	case poll.Paused:
-		color = lipgloss.Color("8")
-	case poll.BackingOff:
-		color = lipgloss.Color("3")
-	case poll.Unreachable:
-		color = lipgloss.Color("1")
-	case poll.NoHerdr:
-		color = lipgloss.Color("5")
-	case poll.Skewed:
-		color = lipgloss.Color("4")
-	case poll.Newer:
-		color = lipgloss.Color("3")
-	case poll.Checking:
-		color = lipgloss.Color("8")
-	default:
-		return value
-	}
-	return lipgloss.NewStyle().Foreground(color).Render(value)
-}
-
-func colorAgentStatus(value string) string {
-	style := lipgloss.NewStyle()
-	switch value {
-	case "blocked":
-		style = style.Foreground(lipgloss.Color("1")).Bold(true)
-	case "done":
-		style = style.Foreground(lipgloss.Color("3")).Bold(true)
-	case "working":
-		style = style.Foreground(lipgloss.Color("6"))
-	case "idle", "unknown":
-		style = style.Foreground(lipgloss.Color("8"))
-	default:
-		return agentStatusLabel(value)
-	}
-	return style.Render(agentStatusLabel(value))
-}
-
 func (m *Model) findTarget(name string) (target.Target, bool) {
 	i := m.targetIndex(name)
 	if i < 0 {
@@ -312,16 +275,38 @@ func (m *Model) targetIndex(name string) int {
 	return -1
 }
 
-func (m *Model) resize() {
-	m.resizeAddInputs()
-	m.configureColumns()
-	m.rebuildRows()
-}
-
 func truncateLines(s string, limit int) string {
 	lines := strings.Split(s, "\n")
 	if len(lines) > limit {
 		lines = lines[len(lines)-limit:]
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m *Model) updateTableKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "i":
+		if focused := m.focused(); focused != nil && focused.agent != nil {
+			m.showInspector = !m.showInspector
+		}
+	case "o":
+		m.openExpandedOutput()
+		return m, nil
+	case "enter":
+		if !m.session.isDemo() {
+			if focused := m.focused(); focused != nil && focused.agent != nil {
+				m.overlay = overlayState{kind: overlayAttach, target: focused.target, pane: focused.agent.PaneID}
+				return m, nil
+			}
+		}
+	}
+	old := m.table.Cursor()
+	var cmd tea.Cmd
+	m.table, cmd = m.table.Update(msg)
+	if old != m.table.Cursor() {
+		m.tableCursor = m.table.Cursor()
+		m.updateSelectionMarkers()
+		return m, tea.Batch(cmd, m.readFocused())
+	}
+	return m, cmd
 }

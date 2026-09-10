@@ -14,30 +14,18 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
+	"github.com/mjrusso/herdlord/internal/fleet"
 	"github.com/mjrusso/herdlord/internal/herdr"
 	"github.com/mjrusso/herdlord/internal/poll"
 	"github.com/mjrusso/herdlord/internal/target"
 )
-
-func TestTargetStateColorsAreDistinct(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI)
-	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
-	values := []string{
-		colorLabel(poll.Paused, "state"),
-		colorLabel(poll.BackingOff, "state"),
-		colorLabel(poll.Unreachable, "state"),
-	}
-	if values[0] == values[1] || values[1] == values[2] || values[0] == values[2] {
-		t.Fatalf("state styles are not distinct: %#v", values)
-	}
-}
 
 func TestTargetHealthShowsLastSuccessAndError(t *testing.T) {
 	now := time.Now()
 	if got := relativeAge(now.Add(-18*time.Second), now); got != "18s ago" {
 		t.Fatalf("relative age = %q", got)
 	}
-	m := New([]target.Target{{Name: "workbox"}, {Name: "paused"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "workbox"}, {Name: "paused"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["workbox"] = poll.TargetStatus{State: poll.BackingOff, Err: "SSH timeout", LastSuccess: now.Add(-2 * time.Minute)}
 	m.statuses["paused"] = poll.TargetStatus{State: poll.Paused}
 	view := m.healthView()
@@ -54,7 +42,7 @@ func TestTargetHealthShowsLastSuccessAndError(t *testing.T) {
 func TestDashboardErrorNoticeUsesResponsivePanel(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
-	m := New(nil, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel(nil, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.width = 52
 	m.setNotice(noticeError, "Could not read recent output: the remote connection timed out")
 
@@ -79,27 +67,94 @@ func TestDashboardErrorNoticeUsesResponsivePanel(t *testing.T) {
 }
 
 func TestDashboardErrorNoticeUpdatesAvailableHeight(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Agent: "codex", Status: "idle"}}}
 	m.rebuildRows()
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 52, Height: 18})
 	heightWithoutNotice := m.table.Height()
+	viewWithoutNotice := ansi.Strip(m.View())
+	activityRowWithoutNotice := lineContaining(viewWithoutNotice, "Activity")
+	if gap := len(strings.Split(viewWithoutNotice, "\n")) - 1 - activityRowWithoutNotice; gap != 3 {
+		t.Fatalf("activity-to-footer distance = %d, want 3", gap)
+	}
 
 	m.setNotice(noticeError, "Could not read recent output: the remote connection timed out")
+	m.refreshFrame()
+	viewWithNotice := ansi.Strip(m.View())
 	if m.table.Height() >= heightWithoutNotice {
 		t.Fatalf("error panel did not reduce table height: %d >= %d", m.table.Height(), heightWithoutNotice)
 	}
-	assertFooterOnLastRow(t, ansi.Strip(m.View()), 18)
+	if activityRow := lineContaining(viewWithNotice, "Activity"); activityRow != activityRowWithoutNotice {
+		t.Fatalf("error moved activity row from %d to %d", activityRowWithoutNotice, activityRow)
+	}
+	if gap := len(strings.Split(viewWithNotice, "\n")) - 1 - lineContaining(viewWithNotice, "Activity"); gap != 3 {
+		t.Fatalf("activity-to-footer distance with error = %d, want 3", gap)
+	}
+	assertFooterOnLastRow(t, ansi.Strip(m.View()), 52, 18)
 
 	m.clearNotice()
+	m.refreshFrame()
+	viewWithoutNotice = ansi.Strip(m.View())
 	if m.table.Height() != heightWithoutNotice {
 		t.Fatalf("clearing error did not restore table height: %d != %d", m.table.Height(), heightWithoutNotice)
 	}
-	assertFooterOnLastRow(t, ansi.Strip(m.View()), 18)
+	assertFooterOnLastRow(t, viewWithoutNotice, 52, 18)
+}
+
+func TestTableDashboardFitsTerminal(t *testing.T) {
+	targets := []target.Target{{Name: "one"}, {Name: "two"}, {Name: "three"}}
+	m := newASCIIModel(targets, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	assertTableDashboardFitsTerminal(t, m)
+}
+
+func TestDemoTableDashboardFitsTerminal(t *testing.T) {
+	m := newASCIIDemo(time.Second, time.Second)
+	m.pasture.Close()
+	assertTableDashboardFitsTerminal(t, m)
+}
+
+func TestActivityRailRequiresEnoughHeight(t *testing.T) {
+	targets := []target.Target{{Name: "one"}, {Name: "two"}, {Name: "three"}}
+	m := newASCIIModel(targets, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 7})
+	if view := ansi.Strip(m.View()); strings.Contains(view, "Activity") {
+		t.Fatalf("seven-row dashboard includes activity rail:\n%s", view)
+	}
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 8})
+	if view := ansi.Strip(m.View()); !strings.Contains(view, "Activity") {
+		t.Fatalf("eight-row dashboard omitted activity rail:\n%s", view)
+	}
+}
+
+func assertTableDashboardFitsTerminal(t *testing.T, m *Model) {
+	t.Helper()
+	widths := []int{20, 40, 60, 80, 100, 120, 140, 160}
+	var overflows []string
+	for _, width := range widths {
+		for height := 4; height <= 70; height++ {
+			m.Update(tea.WindowSizeMsg{Width: width, Height: height})
+			rendered := renderedHeight(m.View())
+			if rendered > height {
+				overflows = append(overflows, fmt.Sprintf("%dx%d rendered %d rows", width, height, rendered))
+			}
+		}
+	}
+	if len(overflows) > 0 {
+		t.Fatalf("table dashboard overflowed at %d sizes:\n%s", len(overflows), strings.Join(overflows, "\n"))
+	}
+}
+
+func lineContaining(view, value string) int {
+	for index, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, value) {
+			return index
+		}
+	}
+	return -1
 }
 
 func TestDashboardErrorNoticeLimitsLongMessages(t *testing.T) {
-	m := New(nil, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel(nil, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.width = 32
 	message := "Could not complete the operation because the remote host returned " + strings.Repeat("diagnostic", 12) + " that should remain available in state"
 	m.setNotice(noticeError, message)
@@ -123,7 +178,7 @@ func TestDashboardErrorNoticeLimitsLongMessages(t *testing.T) {
 
 func TestResponsiveAgentTableAndDetails(t *testing.T) {
 	agent := herdr.Agent{WorkspaceID: "w1", Workspace: "herdlord", TabID: "w1:t1", Tab: "dashboard", PaneID: "w1:p1", Agent: "codex", Status: "working", CWD: "/project", TerminalTitle: "◑ Adding metadata", TerminalTitleStripped: "Adding metadata", Revision: 1}
-	m := New([]target.Target{{Name: "workbox"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "workbox"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["workbox"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{agent}}
 
 	tests := []struct {
@@ -153,7 +208,7 @@ func TestResponsiveAgentTableAndDetails(t *testing.T) {
 			}
 		}
 	}
-	if got := m.rows[0].values[6]; got != "Adding metadata" {
+	if got := m.table.Rows()[0][6]; got != "Adding metadata" {
 		t.Fatalf("TERMINAL = %q", got)
 	}
 	details := m.detailsView()
@@ -171,7 +226,7 @@ func TestInspectorSanitizesEveryAgentField(t *testing.T) {
 		PaneID: unsafe, Agent: unsafe, Status: unsafe, CWD: "/tmp/" + unsafe,
 		TerminalTitle: unsafe, TerminalTitleStripped: "safe title",
 	}
-	m := New([]target.Target{{Name: unsafe}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: unsafe}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses[unsafe] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{agent}}
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
 	m.showInspector = true
@@ -185,10 +240,10 @@ func TestInspectorSanitizesEveryAgentField(t *testing.T) {
 }
 
 func TestInspectorDefaultOffAndToggle(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Workspace: "project", Agent: "codex", Status: "idle"}}}
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m.outputKey, m.output = m.focusKey(), "recent agent output"
+	m.output.show(m.focusKey(), "recent agent output")
 	view := ansi.Strip(m.View())
 	if m.showInspector || strings.Contains(view, "Agent inspector") || strings.Contains(view, "recent agent output") || !strings.Contains(view, "i inspect") {
 		t.Fatalf("default inspector state: shown=%v\n%s", m.showInspector, view)
@@ -196,17 +251,17 @@ func TestInspectorDefaultOffAndToggle(t *testing.T) {
 	if strings.HasSuffix(m.View(), "\n") {
 		t.Fatal("dashboard rendered an extra trailing row")
 	}
-	assertFooterOnLastRow(t, view, 24)
+	assertFooterOnLastRow(t, view, 80, 24)
 	heightWithoutDetails := m.table.Height()
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
 	view = ansi.Strip(m.View())
 	if !m.showInspector || !strings.Contains(view, "Agent inspector  box / codex / idle") || !strings.Contains(view, "recent agent output") || !strings.Contains(view, "╭") || !strings.Contains(view, "╯") || m.table.Height() >= heightWithoutDetails {
 		t.Fatalf("inspector did not open: shown=%v, table=%d/%d\n%s", m.showInspector, m.table.Height(), heightWithoutDetails, view)
 	}
-	if width := ansi.StringWidth(strings.Split(ansi.Strip(m.inspectorView()), "\n")[0]); width != 80 {
+	if width := ansi.StringWidth(strings.Split(ansi.Strip(m.inspectorView(renderedHeight(m.healthView()))), "\n")[0]); width != 80 {
 		t.Fatalf("inspector width = %d, want 80", width)
 	}
-	assertFooterOnLastRow(t, view, 24)
+	assertFooterOnLastRow(t, view, 80, 24)
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
 	if m.showInspector || strings.Contains(ansi.Strip(m.View()), "Agent inspector") || strings.Contains(ansi.Strip(m.View()), "recent agent output") {
 		t.Fatal("inspector did not close")
@@ -214,13 +269,14 @@ func TestInspectorDefaultOffAndToggle(t *testing.T) {
 }
 
 func TestInspectorUsesAvailableHeightForOutput(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Workspace: "project", Agent: "codex", Status: "idle"}}}
 	lines := make([]string, 20)
 	for i := range lines {
 		lines[i] = fmt.Sprintf("output-%02d", i+1)
 	}
-	m.outputKey, m.output, m.showInspector = "box\x00p1", strings.Join(lines, "\n"), true
+	m.output.show(fleet.NewAgentKey("box", "p1"), strings.Join(lines, "\n"))
+	m.showInspector = true
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	view := ansi.Strip(m.View())
 	if !strings.Contains(view, "output-17") || !strings.Contains(view, "output-20") || strings.Contains(view, "output-16") {
@@ -229,28 +285,61 @@ func TestInspectorUsesAvailableHeightForOutput(t *testing.T) {
 	if strings.Contains(view, "Recent output") || strings.Contains(view, "Directory ") || strings.Contains(view, "Terminal ") {
 		t.Fatalf("compact inspector contains expanded fields:\n%s", view)
 	}
-	assertFooterOnLastRow(t, view, 24)
+	assertFooterOnLastRow(t, view, 80, 24)
 
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 32})
-	if limit := m.outputLineLimit(); limit < 16 {
+	if limit := m.outputLineLimit(renderedHeight(m.healthView())); limit < 16 {
 		t.Fatalf("32-line output limit = %d, want at least 16", limit)
 	}
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 60})
-	if limit := m.outputLineLimit(); limit != 36 {
+	if limit := m.outputLineLimit(renderedHeight(m.healthView())); limit != 36 {
 		t.Fatalf("60-line output limit = %d, want 36", limit)
 	}
 }
 
-func assertFooterOnLastRow(t *testing.T, view string, height int) {
+func TestOutputLineLimitUsesRenderedHealthHeight(t *testing.T) {
+	m := newASCIIModel(nil, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{})
+	m.width, m.height = 100, 40
+	withoutHealth := m.outputLineLimit(0)
+	for count := 1; count <= 3; count++ {
+		configured := target.Target{Name: fmt.Sprintf("box-%d", count)}
+		m.targets = append(m.targets, configured)
+		m.statuses[configured.Name] = poll.TargetStatus{State: poll.Unreachable}
+		healthHeight := renderedHeight(m.healthView())
+		if got := m.outputLineLimit(healthHeight); got != withoutHealth-healthHeight {
+			t.Fatalf("%d targets: output limit = %d, want %d", count, got, withoutHealth-healthHeight)
+		}
+	}
+}
+
+func assertFooterOnLastRow(t *testing.T, view string, width, height int) {
 	t.Helper()
 	lines := strings.Split(strings.TrimSuffix(view, "\n"), "\n")
 	if len(lines) != height || !strings.Contains(lines[height-1], "q quit") {
 		t.Fatalf("footer is not on row %d (got %d rows):\n%s", height, len(lines), view)
 	}
+	if renderedWidth := ansi.StringWidth(lines[height-1]); renderedWidth > width {
+		t.Fatalf("footer is %d columns wide, terminal width is %d: %q", renderedWidth, width, lines[height-1])
+	}
+}
+
+func TestFocusedFooterFitsIntermediateWidth(t *testing.T) {
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Agent: "codex", Status: "idle"}}}
+	m.rebuildRows()
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 84, Height: 24})
+
+	footer := ansi.Strip(testFooterView(m))
+	if strings.Contains(footer, "r refresh") {
+		t.Fatalf("84-column focused footer includes refresh hint: %q", footer)
+	}
+	if width := ansi.StringWidth(footer); width > 84 {
+		t.Fatalf("focused footer width = %d, want at most 84: %q", width, footer)
+	}
 }
 
 func TestTableUsesAvailableWidth(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Workspace: "a long workspace name", Agent: "codex", Status: "working"}}}
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 90, Height: 24})
 	width90 := m.table.Columns()[2].Width
@@ -271,7 +360,7 @@ func TestAgentStatusSortUsesHerdrOrder(t *testing.T) {
 	for i, status := range statuses {
 		agents[i] = herdr.Agent{PaneID: status, Agent: "codex", Status: status}
 	}
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: agents}
 	m.rebuildRows()
 	got := make([]string, len(m.rows))
@@ -285,7 +374,7 @@ func TestAgentStatusSortUsesHerdrOrder(t *testing.T) {
 }
 
 func TestPollReorderingPreservesFocusedAgent(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{
 		{PaneID: "p1", Agent: "one", Status: "working"},
 		{PaneID: "p2", Agent: "two", Status: "idle"},
@@ -303,25 +392,26 @@ func TestPollReorderingPreservesFocusedAgent(t *testing.T) {
 }
 
 func TestUncachedSelectionClearsOutputWhileLoading(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{
 		{PaneID: "p1", Agent: "one", Status: "working", Revision: 1},
 		{PaneID: "p2", Agent: "two", Status: "idle", Revision: 1},
 	}}
 	m.rebuildRows()
-	m.outputKey, m.output = "box\x00p1", "old output"
+	m.output.show(fleet.NewAgentKey("box", "p1"), "old output")
 	m.showInspector = true
 	m.table.SetCursor(1)
 	if cmd := m.readFocused(); cmd == nil {
 		t.Fatal("uncached pane did not schedule a read")
 	}
-	if m.output != "" || !m.outputLoading || !strings.Contains(m.View(), "Loading recent output…") {
-		t.Fatalf("loading state = output %q, loading %v\n%s", m.output, m.outputLoading, m.View())
+	m.refreshFrame()
+	if m.output.text != "" || !m.output.loading || !strings.Contains(m.View(), "Loading recent output…") {
+		t.Fatalf("loading state = output %q, loading %v\n%s", m.output.text, m.output.loading, m.View())
 	}
 }
 
 func TestHelpIsModal(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK}
 	m.rebuildRows()
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
@@ -341,17 +431,18 @@ func TestHelpIsModal(t *testing.T) {
 }
 
 func TestCheckingStateIsNeutral(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.Checking}
 	m.rebuildRows()
-	if label(m.statuses["box"]) != "checking" || m.healthView() != "" || !strings.Contains(ansi.Strip(m.rows[0].values[len(m.rows[0].values)-1]), "checking") {
-		t.Fatalf("checking presentation: row %#v, health %q", m.rows[0].values, m.healthView())
+	values := m.table.Rows()[0]
+	if label(m.statuses["box"]) != "checking" || m.healthView() != "" || !strings.Contains(ansi.Strip(values[len(values)-1]), "checking") {
+		t.Fatalf("checking presentation: row %#v, health %q", values, m.healthView())
 	}
 }
 
 func TestHealthViewCapsRowsAndErrors(t *testing.T) {
 	targets := make([]target.Target, 5)
-	m := New(targets, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel(targets, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.width, m.height = 70, 24
 	for i := range targets {
 		name := fmt.Sprintf("box-%d", i)
@@ -371,7 +462,7 @@ func TestHealthViewCapsRowsAndErrors(t *testing.T) {
 
 func TestHealthViewAdaptsToNarrowWidth(t *testing.T) {
 	name := strings.Repeat("remote-", 10)
-	m := New([]target.Target{{Name: name}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: name}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.width, m.height = 52, 24
 	m.statuses[name] = poll.TargetStatus{State: poll.Unreachable, Err: strings.Repeat("connection refused ", 20)}
 	view := m.healthView()
@@ -386,7 +477,7 @@ func TestHealthViewAdaptsToNarrowWidth(t *testing.T) {
 }
 
 func TestRefreshWithoutActiveTargetsDoesNotWaitForever(t *testing.T) {
-	m := New([]target.Target{{Name: "paused", Paused: true}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "paused", Paused: true}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.refreshAll()
 	if m.message != "No active targets to refresh" {
 		t.Fatalf("refresh message = %q", m.message)
@@ -396,16 +487,16 @@ func TestRefreshWithoutActiveTargetsDoesNotWaitForever(t *testing.T) {
 func TestFooterAdaptsToWidth(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.width = 50
-	if got := ansi.Strip(m.footerView()); strings.Contains(got, "attach") || !strings.Contains(got, "? help") {
+	if got := ansi.Strip(testFooterView(m)); strings.Contains(got, "attach") || !strings.Contains(got, "? help") {
 		t.Fatalf("narrow footer = %q", got)
 	}
 	m.width = 120
-	if got := ansi.Strip(m.footerView()); !strings.Contains(got, "t targets") || !strings.Contains(got, "r refresh") || strings.Contains(got, "space pause") {
+	if got := ansi.Strip(testFooterView(m)); !strings.Contains(got, "t targets") || !strings.Contains(got, "r refresh") || strings.Contains(got, "space pause") {
 		t.Fatalf("wide footer = %q", got)
 	}
-	if got := m.footerView(); !strings.Contains(got, "\x1b[1mt") {
+	if got := testFooterView(m); !strings.Contains(got, "\x1b[1mt") {
 		t.Fatalf("dashboard shortcut is not bold: %q", got)
 	}
 }
@@ -413,7 +504,7 @@ func TestFooterAdaptsToWidth(t *testing.T) {
 func TestDashboardFooterStylesFirstShortcut(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Agent: "codex", Status: "idle"}}}
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	lines := strings.Split(strings.TrimSuffix(m.View(), "\n"), "\n")
@@ -424,7 +515,7 @@ func TestDashboardFooterStylesFirstShortcut(t *testing.T) {
 }
 
 func TestDashboardFitsShortTerminal(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}, {Name: "offline"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}, {Name: "offline"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Agent: "codex", Status: "working", Workspace: "herdlord", Tab: "dashboard", Revision: 1}}}
 	m.statuses["offline"] = poll.TargetStatus{State: poll.BackingOff, Err: strings.Repeat("SSH timeout ", 20)}
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 70, Height: 24})
@@ -440,28 +531,18 @@ func TestDashboardFitsShortTerminal(t *testing.T) {
 	}
 }
 
-func TestAgentStatusColorsAreSemanticAndDistinct(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI)
-	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
-	seen := map[string]bool{}
-	for _, status := range []string{"blocked", "done", "working", "idle"} {
-		seen[colorAgentStatus(status)] = true
-	}
-	if len(seen) != 4 {
-		t.Fatalf("agent styles are not distinct: %#v", seen)
-	}
-}
-
 func TestTableStatusesContainNoEmbeddedANSI(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{
 		{PaneID: "p1", Agent: "one", Status: "working"},
 		{PaneID: "p2", Agent: "two", Status: "idle"},
 	}}
 	m.width, m.height = 100, 24
-	m.resize()
+	m.resizeAddInputs()
+	m.configureColumns()
+	m.rebuildRows()
 	for _, renderedRow := range m.table.Rows() {
 		for _, cell := range renderedRow {
 			if strings.Contains(cell, "\x1b") {
@@ -476,11 +557,11 @@ func TestTableStatusesContainNoEmbeddedANSI(t *testing.T) {
 }
 
 func TestFreshPollClearsRefreshMessage(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.refreshPending["box"] = true
 	m.refreshTotal = 1
 	m.setNotice(noticeInfo, "Refreshing 0 of 1 targets…")
-	_, _ = m.Update(poll.Result{Name: "box", Status: poll.TargetStatus{State: poll.OK}})
+	sendPollStatus(m, "box", poll.TargetStatus{State: poll.OK})
 	if m.message != "" {
 		t.Fatalf("refresh message = %q", m.message)
 	}
@@ -498,7 +579,7 @@ func TestNavigationKeyMapAndHelp(t *testing.T) {
 	if !reflect.DeepEqual(got, wants) {
 		t.Fatalf("navigation keymap = %#v", got)
 	}
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1"}}}
 	m.rebuildRows()
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
@@ -517,7 +598,7 @@ func TestNavigationKeyMapAndHelp(t *testing.T) {
 	}
 	actions := []string{"Attach agent", "Toggle inspector", "Expand output", "Manage targets", "Refresh targets"}
 	foundActions := 0
-	for _, line := range strings.Split(helpOverlay(true, true), "\n") {
+	for _, line := range strings.Split(m.helpOverlay(), "\n") {
 		for _, action := range actions {
 			if !strings.Contains(line, action) {
 				continue
@@ -536,10 +617,43 @@ func TestNavigationKeyMapAndHelp(t *testing.T) {
 	}
 }
 
+func TestPastureHelpOmitsTableOnlyActions(t *testing.T) {
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1"}}}
+	if err := m.pasture.Open(m.measureFrame().pasture); err != nil {
+		t.Fatal(err)
+	}
+	help := m.helpOverlay()
+	for _, action := range []string{"Toggle inspector", "Expand output", "Attach agent"} {
+		if strings.Contains(help, action) {
+			t.Fatalf("pasture help advertised table-only action %q", action)
+		}
+	}
+}
+
+func TestPastureFooterOffersRendererToggle(t *testing.T) {
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{})
+	m.openPasture()
+	footer := ansi.Strip(testFooterView(m))
+	if !strings.Contains(footer, "R renderer") {
+		t.Fatalf("pasture footer = %q", footer)
+	}
+}
+
+func TestPastureFooterFitsNarrowTerminal(t *testing.T) {
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{})
+	m.Update(tea.WindowSizeMsg{Width: 40, Height: 50})
+	m.openPasture()
+	footer := ansi.Strip(testFooterView(m))
+	if width := ansi.StringWidth(footer); width > m.width {
+		t.Fatalf("pasture footer is %d columns wide in a %d-column terminal: %q", width, m.width, footer)
+	}
+}
+
 func TestAttachExplainsHowToReturn(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
-	m := New([]target.Target{{Name: "workbox"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "workbox"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["workbox"] = poll.TargetStatus{State: poll.OK, HerdrPath: "/opt/herdr", Agents: []herdr.Agent{{PaneID: "p1", TerminalID: "term-1", Agent: "codex"}}}
 	m.rebuildRows()
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -563,7 +677,7 @@ func TestAttachExplainsHowToReturn(t *testing.T) {
 }
 
 func TestAttachConfirmationCannotSwitchAgents(t *testing.T) {
-	m := New([]target.Target{{Name: "workbox"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "workbox"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["workbox"] = poll.TargetStatus{State: poll.OK, HerdrPath: "/opt/herdr", Agents: []herdr.Agent{
 		{PaneID: "p1", TerminalID: "term-1", Agent: "one", Status: "working"},
 		{PaneID: "p2", TerminalID: "term-2", Agent: "two", Status: "idle"},
@@ -586,7 +700,7 @@ func TestDeleteRequiresConfirmation(t *testing.T) {
 	if err := target.Save(path, configured); err != nil {
 		t.Fatal(err)
 	}
-	m := New(configured, path, poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel(configured, path, poll.Manager{Client: &fakeClient{}})
 	m.statuses["workbox"] = poll.TargetStatus{State: poll.OK}
 	m.rebuildRows()
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
@@ -630,11 +744,14 @@ func TestDashboardGolden(t *testing.T) {
 	}
 	var views []string
 	for _, tt := range tests {
-		m := New(tt.targets, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+		m := newASCIIModel(tt.targets, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 		m.statuses = tt.statuses
 		m.width, m.height = 100, 24
-		m.resize()
+		m.resizeAddInputs()
+		m.configureColumns()
 		m.rebuildRows()
+		m.rebuildRows()
+		m.refreshFrame()
 		views = append(views, "== "+tt.name+" ==\n"+compactView(ansi.Strip(m.View())))
 	}
 	got := strings.Join(views, "\n\n") + "\n"

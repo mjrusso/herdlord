@@ -8,12 +8,14 @@ import (
 )
 
 func (m *Model) modalView(background, body string, maxWidth int) string {
+	// Every path drops the background, so it must still carry the background's Kitty deletes or its sprites stay on screen.
+	control := leadingKittyDeletes(background)
 	if m.width <= 0 || m.height <= 0 {
-		return body + "\n"
+		return control + body + "\n"
 	}
 	outerWidth := min(maxWidth, m.width-2)
 	if outerWidth < 42 {
-		return body + "\n"
+		return control + body + "\n"
 	}
 	panel := lipgloss.NewStyle().
 		Width(outerWidth-2).
@@ -23,7 +25,7 @@ func (m *Model) modalView(background, body string, maxWidth int) string {
 		Render(body)
 	panelWidth, panelHeight := lipgloss.Width(panel), lipgloss.Height(panel)
 	if panelHeight > m.height {
-		return body + "\n"
+		return control + body + "\n"
 	}
 
 	left := (m.width - panelWidth) / 2
@@ -46,7 +48,20 @@ func (m *Model) modalView(background, body string, maxWidth int) string {
 		suffix := ansi.Cut(line, left+panelWidth, m.width)
 		lines[y] = dim.Render(prefix) + panelLines[y-top] + dim.Render(suffix)
 	}
-	return strings.Join(lines, "\n")
+	return control + strings.Join(lines, "\n")
+}
+
+func leadingKittyDeletes(value string) string {
+	const deletePrefix = "\x1b_Ga=d,"
+	end := 0
+	for strings.HasPrefix(value[end:], deletePrefix) {
+		terminator := strings.Index(value[end:], "\x1b\\")
+		if terminator < 0 {
+			break
+		}
+		end += terminator + 2
+	}
+	return value[:end]
 }
 
 func (m *Model) outputModalWidth() int {

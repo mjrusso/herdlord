@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -12,8 +13,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/mjrusso/herdlord/internal/demo"
 	"github.com/mjrusso/herdlord/internal/display"
+	"github.com/mjrusso/herdlord/internal/fleet"
 	"github.com/mjrusso/herdlord/internal/herdr"
+	"github.com/mjrusso/herdlord/internal/pasture"
 	"github.com/mjrusso/herdlord/internal/poll"
 	"github.com/mjrusso/herdlord/internal/target"
 	"github.com/mjrusso/herdlord/internal/targetmgr"
@@ -22,7 +26,8 @@ import (
 type row struct {
 	target string
 	agent  *herdr.Agent
-	values []string
+	status string
+	detail string
 }
 
 type validationMsg struct {
@@ -67,6 +72,12 @@ type pollSender struct {
 	generation uint64
 }
 
+type poller struct {
+	cancel     context.CancelFunc
+	refresh    chan struct{}
+	generation uint64
+}
+
 func (s pollSender) Send(msg tea.Msg) {
 	result, ok := msg.(poll.Result)
 	if ok {
@@ -75,7 +86,7 @@ func (s pollSender) Send(msg tea.Msg) {
 }
 
 type outputMsg struct {
-	key        string
+	key        fleet.AgentKey
 	target     string
 	generation uint64
 	revision   int64
@@ -103,35 +114,45 @@ type Model struct {
 	targets              []target.Target
 	statuses             map[string]poll.TargetStatus
 	rows                 []row
-	configPath           string
 	manager              poll.Manager
+	session              session
 	program              *tea.Program
-	cancels              map[string]context.CancelFunc
-	refresh              map[string]chan struct{}
-	generations          map[string]uint64
+	pollers              map[string]poller
+	pollerGeneration     uint64
 	overlay              overlayState
 	validationGeneration uint64
 	message              string
 	messageKind          noticeKind
 	refreshPending       map[string]bool
 	refreshTotal         int
-	width                int
-	height               int
-	output               string
-	outputKey            string
-	outputLoading        bool
+	width, height        int
+	frame                frame
+	output               outputPane
 	outputViewport       viewport.Model
-	loadingKey           string
-	loadingRev           int64
-	inflight             map[string]int64
-	outputs              map[string]cachedOutput
+	inflight             map[fleet.AgentKey]int64
+	outputs              map[fleet.AgentKey]cachedOutput
 	showInspector        bool
+	pasture              *pasture.State
+	tableCursor          int
+	tableDirty           bool
 	targetCursor         int
 	editTarget           string
 	layout               tableLayout
+	activityLog
 }
 
-func New(targets []target.Target, configPath string, manager poll.Manager) *Model {
+func (m *Model) viewportWidth() int {
+	if m.width > 0 {
+		return m.width
+	}
+	return 80
+}
+
+func New(targets []target.Target, configPath string, manager poll.Manager, renderer pasture.Renderer) *Model {
+	return newModel(targets, manager, liveSession(fileTargetStore{path: configPath, manager: manager}), renderer)
+}
+
+func newModel(targets []target.Target, manager poll.Manager, currentSession session, renderer pasture.Renderer) *Model {
 	columns := []table.Column{
 		{Title: "TARGET", Width: 18},
 		{Title: "AGENT", Width: 12},
@@ -153,9 +174,19 @@ func New(targets []target.Target, configPath string, manager poll.Manager) *Mode
 	inputs[1].Placeholder = "ssh workbox --"
 	inputs[2].Placeholder = "ssh -t workbox --"
 	t.KeyMap = navigationKeyMap()
-	m := &Model{table: t, addInputs: inputs, targets: targets, configPath: configPath, manager: manager, statuses: map[string]poll.TargetStatus{}, cancels: map[string]context.CancelFunc{}, refresh: map[string]chan struct{}{}, refreshPending: map[string]bool{}, generations: map[string]uint64{}, outputs: map[string]cachedOutput{}, inflight: map[string]int64{}}
+	m := &Model{table: t, addInputs: inputs, targets: targets, manager: manager, session: currentSession, statuses: map[string]poll.TargetStatus{}, pollers: map[string]poller{}, refreshPending: map[string]bool{}, outputs: map[fleet.AgentKey]cachedOutput{}, inflight: map[fleet.AgentKey]int64{}, pasture: pasture.New(renderer), tableCursor: t.Cursor()}
 	m.outputViewport = viewport.New(1, 1)
 	m.configureColumns()
+	m.refreshFrame()
+	return m
+}
+
+func NewDemo(interval, timeout time.Duration, renderer pasture.Renderer) *Model {
+	client := demo.New()
+	manager := poll.Manager{Client: client, Interval: interval, Timeout: timeout}
+	m := newModel(client.Targets(), manager, demoSession(client), renderer)
+	m.recordActivity("demo ready")
+	m.openPasture()
 	return m
 }
 
@@ -171,208 +202,28 @@ func (m *Model) Init() tea.Cmd {
 		}
 	}
 	m.rebuildRows()
-	return m.watchConfig()
-}
-
-func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		outputWasAtBottom := m.outputViewport.AtBottom()
-		m.width, m.height = msg.Width, msg.Height
-		m.resize()
-		m.configureOutputViewport(m.overlay.kind == overlayOutput && outputWasAtBottom)
-	case poll.Result:
-		m.statuses[msg.Name] = msg.Status
-		m.updateRefreshProgress(msg.Name)
-		m.rebuildRows()
-		return m, m.readFocused()
-	case pollMsg:
-		if m.generations[msg.result.Name] != msg.generation || m.targetIndex(msg.result.Name) < 0 {
-			return m, nil
-		}
-		m.statuses[msg.result.Name] = msg.result.Status
-		m.updateRefreshProgress(msg.result.Name)
-		m.rebuildRows()
-		return m, m.readFocused()
-	case configMsg:
-		if msg.err != nil {
-			m.setNotice(noticeError, "Could not reload targets: "+msg.err.Error())
-		} else {
-			m.reconcile(msg.targets)
-			if strings.HasPrefix(m.message, "Could not reload targets: ") {
-				m.clearNotice()
-			}
-		}
-		return m, tea.Batch(m.watchConfig(), m.readFocused())
-	case validationMsg:
-		if msg.generation != m.validationGeneration {
-			return m, nil
-		}
-		if msg.err != nil {
-			m.setNotice(noticeError, "Could not validate target: "+msg.err.Error())
-			return m, nil
-		}
-		manager := targetmgr.Manager{Poller: m.manager}
-		verb := "Added"
-		if msg.original == "" {
-			if err := manager.Add(m.configPath, msg.target); err != nil {
-				m.setNotice(noticeError, "Could not add target: "+err.Error())
-				return m, nil
-			}
-		} else {
-			_, _, err := manager.Update(context.Background(), m.configPath, msg.original, func(configured *target.Target) error {
-				paused := configured.Paused
-				*configured = msg.target
-				configured.Paused = paused
-				return nil
-			}, false)
-			if err != nil {
-				m.setNotice(noticeError, "Could not edit target: "+err.Error())
-				return m, nil
-			}
-			verb = "Updated"
-		}
-		latest, err := target.Load(m.configPath)
-		if err != nil {
-			m.setNotice(noticeError, "Could not reload targets: "+err.Error())
-			return m, nil
-		}
-		m.reconcile(latest)
-		if msg.status.State == poll.OK {
-			m.setNotice(noticeSuccess, fmt.Sprintf("%s %s · Herdr %s", verb, msg.target.Name, msg.status.Version))
-		} else {
-			m.setNotice(noticeSuccess, fmt.Sprintf("%s %s · %s", verb, msg.target.Name, label(msg.status)))
-		}
-		m.statuses[msg.target.Name] = msg.status
-		m.rebuildRows()
-	case outputMsg:
-		if msg.target != "" && (m.generations[msg.target] != msg.generation || m.targetIndex(msg.target) < 0) {
-			return m, nil
-		}
-		if revision, ok := m.inflight[msg.key]; ok && revision == msg.revision {
-			delete(m.inflight, msg.key)
-		}
-		if msg.err != nil {
-			if msg.target != "" && !m.isCurrentOutputRequest(msg.key, msg.revision) {
-				return m, nil
-			}
-			if m.isCurrentOutputRequest(msg.key, msg.revision) {
-				initialLoad := m.outputLoading
-				m.outputLoading = false
-				m.loadingKey, m.loadingRev = "", 0
-				if initialLoad {
-					if m.overlay.kind == overlayOutput {
-						m.overlay = overlayState{}
-					}
-					m.outputKey, m.output = "", ""
-				}
-				m.updateTableHeight()
-			}
-			m.setNotice(noticeError, "Could not read recent output: "+msg.err.Error())
-			return m, nil
-		}
-		if cached, ok := m.outputs[msg.key]; ok && cached.revision > msg.revision {
-			return m, nil
-		}
-		text := strings.TrimSpace(display.Block(msg.text))
-		m.outputs[msg.key] = cachedOutput{revision: msg.revision, text: text}
-		if m.isCurrentOutputRequest(msg.key, msg.revision) {
-			wasAtBottom := m.outputViewport.AtBottom()
-			m.outputLoading = false
-			m.loadingKey, m.loadingRev = "", 0
-			m.outputKey, m.output = msg.key, text
-			m.updateTableHeight()
-			m.configureOutputViewport(wasAtBottom)
-		}
-	case tea.KeyMsg:
-		if m.overlay.kind == overlayOutput {
-			return m.updateExpandedOutput(msg)
-		}
-		if m.overlay.kind == overlayAttach {
-			switch msg.String() {
-			case "enter":
-				targetName, paneID := m.overlay.target, m.overlay.pane
-				m.overlay = overlayState{}
-				focused := m.focused()
-				if focused == nil || focused.agent == nil || focused.target != targetName || focused.agent.PaneID != paneID {
-					m.setNotice(noticeError, "The selected agent is no longer available")
-					return m, nil
-				}
-				return m, m.attachFocused()
-			case "q", "esc":
-				m.overlay = overlayState{}
-			case "ctrl+c":
-				m.stopAll()
-				return m, tea.Quit
-			}
-			return m, nil
-		}
-		if m.overlay.kind == overlayHelp {
-			switch msg.String() {
-			case "?", "esc", "q":
-				m.overlay = overlayState{}
-			case "ctrl+c":
-				m.stopAll()
-				return m, tea.Quit
-			}
-			return m, nil
-		}
-		if m.overlay.kind == overlayDelete {
-			return m.updateDeleteConfirmation(msg)
-		}
-		if m.overlay.kind == overlayAdd || m.overlay.kind == overlayEdit {
-			return m.updateInput(msg)
-		}
-		if m.overlay.kind == overlayTargets {
-			return m.updateTargetManager(msg)
-		}
-		switch msg.String() {
-		case "q", "ctrl+c":
-			m.stopAll()
-			return m, tea.Quit
-		case "t":
-			m.openTargetManager()
-			return m, nil
-		case "?":
-			m.overlay = overlayState{kind: overlayHelp}
-			return m, nil
-		case "r":
-			m.refreshAll()
-		case "i":
-			if focused := m.focused(); focused != nil && focused.agent != nil {
-				m.showInspector = !m.showInspector
-				m.updateTableHeight()
-			}
-		case "o":
-			m.openExpandedOutput()
-			return m, nil
-		case "enter":
-			if focused := m.focused(); focused != nil && focused.agent != nil {
-				m.overlay = overlayState{kind: overlayAttach, target: focused.target, pane: focused.agent.PaneID}
-				return m, nil
-			}
-		}
-		old := m.table.Cursor()
-		var cmd tea.Cmd
-		m.table, cmd = m.table.Update(msg)
-		if old != m.table.Cursor() {
-			m.updateSelectionMarkers()
-			return m, tea.Batch(cmd, m.readFocused())
-		}
-		return m, cmd
+	m.refreshFrame()
+	m.pasture.Sync(m.frame.pasture)
+	var commands []tea.Cmd
+	if m.session.store.watchable() {
+		commands = append(commands, m.watchConfig())
 	}
-	return m, nil
-}
-
-func (m *Model) isCurrentOutputRequest(key string, revision int64) bool {
-	return m.loadingKey == key && m.loadingRev == revision && m.focusKey() == key
+	if m.pasture.Visible() {
+		commands = append(commands, pasture.Tick(m.pasture.Generation()))
+	}
+	if expiry := m.pasture.ControlExpiry(); expiry != nil {
+		commands = append(commands, expiry)
+	}
+	if m.session.demoRunning() {
+		commands = append(commands, demoTick(m.session.demoGeneration()))
+	}
+	return tea.Batch(commands...)
 }
 
 func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
-		m.stopAll()
-		return m, tea.Quit
+		return m.quit()
 	case "esc":
 		m.overlay, m.editTarget = overlayState{kind: overlayTargets}, ""
 		m.clearNotice()
@@ -527,63 +378,110 @@ func (m *Model) finishAdd() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) View() string {
-	background := m.dashboardView()
-	if m.overlay.kind == overlayHelp {
-		return m.modalView(background, helpOverlay(len(m.targets) > 0, m.hasAgents()), 68)
+	frame := m.frame
+	display := m.pasture.Display(frame.pasture)
+	background := m.dashboardView(frame, display)
+	view := background
+	switch m.overlay.kind {
+	case overlayHelp:
+		view = m.modalView(background, m.helpOverlay(), 68)
+	case overlayOutput:
+		view = m.modalView(background, m.expandedOutputView(), m.outputModalWidth())
+	case overlayAdd, overlayEdit:
+		view = m.modalView(background, m.addFormView(), 84)
+	case overlayDelete:
+		view = m.modalView(background, m.deleteView(), 84)
+	case overlayAttach:
+		view = m.modalView(background, m.attachView(), 64)
+	case overlayTargets:
+		view = m.modalView(background, m.targetManagerView(), 84)
 	}
-	if m.overlay.kind == overlayOutput {
-		return m.modalView(background, m.expandedOutputView(), m.outputModalWidth())
-	}
-	if m.overlay.kind == overlayAdd || m.overlay.kind == overlayEdit {
-		return m.modalView(background, m.addFormView(), 84)
-	}
-	if m.overlay.kind == overlayDelete {
-		return m.modalView(background, m.deleteView(), 84)
-	}
-	if m.overlay.kind == overlayAttach {
-		return m.modalView(background, m.attachView(), 64)
-	}
-	if m.overlay.kind == overlayTargets {
-		return m.modalView(background, m.targetManagerView(), 84)
-	}
-	return background
+	control := m.pasture.Control()
+	return control + view
 }
 
-func (m *Model) dashboardView() string {
+func (m *Model) dashboardView(frame frame, pastureDisplay pasture.Display) string {
 	var parts []string
 	if len(m.targets) == 0 {
 		parts = append(parts, "No targets configured\n\nAdd a local or remote Herdr session to begin.")
+	} else if m.pasture.Visible() {
+		parts = append(parts, pastureDisplay.View)
 	} else {
 		parts = append(parts, m.table.View())
 	}
-	if health := m.healthView(); health != "" {
-		parts = append(parts, health)
+	if frame.health != "" {
+		parts = append(parts, frame.health)
 	}
-	if m.showInspector {
-		if inspector := m.inspectorView(); inspector != "" {
-			parts = append(parts, inspector)
-		}
+	if frame.inspector != "" {
+		parts = append(parts, frame.inspector)
 	}
 	if m.message != "" {
 		parts = append(parts, m.dashboardNoticeView())
 	}
+	if frame.showActivity {
+		parts = append(parts, m.activityView())
+	}
 	body := strings.Join(parts, "\n\n")
-	footer := m.footerView()
-	gap := 2
+	footer := m.footerView(pastureDisplay.PageLabel)
+	gap := dashboardGapRows
 	if m.height > 0 && lipgloss.Height(body) < m.height {
-		gap = m.height - lipgloss.Height(body)
+		gap = max(minimumDashboardGapRows, m.height-lipgloss.Height(body))
 	}
 	return body + strings.Repeat("\n", gap) + footer
 }
 
+func (m *Model) recordActivity(message string) {
+	if message == "" {
+		return
+	}
+	m.add(display.Text(message))
+}
+
+func (m *Model) activityLabel() string {
+	if !m.session.isDemo() {
+		return "Activity"
+	}
+	if m.session.demoRunning() {
+		return "Activity  DEMO · RUNNING"
+	}
+	return "Activity  DEMO · PAUSED"
+}
+
+func (m *Model) demoControl() string {
+	if m.session.demoRunning() {
+		return "pause"
+	}
+	return "start"
+}
+
+func (m *Model) activityView() string {
+	width := m.viewportWidth()
+	label := m.activityLabel()
+	label = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render(label)
+	events := "No activity yet"
+	first := m.activitySequence - len(m.activity) + 1
+	if len(m.activity) > 0 {
+		items := make([]string, 0, len(m.activity))
+		for i := len(m.activity) - 1; i >= 0; i-- {
+			items = append(items, fmt.Sprintf("#%03d %s", first+i, m.activity[i]))
+		}
+		events = strings.Join(items, "  ·  ")
+	}
+	line := ansi.Truncate(label+"  "+events, max(1, width-4), "…")
+	return lipgloss.NewStyle().
+		Width(max(1, width-2)).
+		Padding(0, 1).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("6")).
+		Render(line)
+}
+
 func (m *Model) setNotice(kind noticeKind, message string) {
 	m.messageKind, m.message = kind, display.Text(message)
-	m.updateTableHeight()
 }
 
 func (m *Model) clearNotice() {
 	m.messageKind, m.message = noticeInfo, ""
-	m.updateTableHeight()
 }
 
 func (m *Model) noticeView() string {
@@ -601,10 +499,7 @@ func (m *Model) dashboardNoticeView() string {
 	if m.messageKind != noticeError {
 		return m.noticeView()
 	}
-	width := m.width
-	if width <= 0 {
-		width = 80
-	}
+	width := m.viewportWidth()
 	color := lipgloss.Color("1")
 	body := lipgloss.NewStyle().Bold(true).Foreground(color).Render("Error") + "\n" +
 		wrappedDashboardError(m.message, max(1, width-4))

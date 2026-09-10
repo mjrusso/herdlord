@@ -2,12 +2,11 @@ package ui
 
 import (
 	"context"
-	"reflect"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/mjrusso/herdlord/internal/fleet"
 	"github.com/mjrusso/herdlord/internal/poll"
 	"github.com/mjrusso/herdlord/internal/target"
 )
@@ -16,32 +15,40 @@ func (m *Model) start(t target.Target) {
 	if t.Paused {
 		return
 	}
-	m.generations[t.Name]++
-	generation := m.generations[t.Name]
+	m.pollerGeneration++
+	current := poller{generation: m.pollerGeneration}
+	generation := current.generation
 	if m.program == nil {
+		m.pollers[t.Name] = current
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan struct{}, 1)
-	m.cancels[t.Name], m.refresh[t.Name] = cancel, ch
+	current.cancel, current.refresh = cancel, ch
+	m.pollers[t.Name] = current
 	initial := m.statuses[t.Name]
 	go m.manager.RunFrom(ctx, t, initial, pollSender{program: m.program, generation: generation}, ch)
 }
 
 func (m *Model) stop(name string) {
 	m.updateRefreshProgress(name)
-	m.generations[name]++
-	if cancel := m.cancels[name]; cancel != nil {
-		cancel()
+	current, exists := m.pollers[name]
+	if !exists {
+		return
 	}
-	delete(m.cancels, name)
-	delete(m.refresh, name)
+	if current.cancel != nil {
+		current.cancel()
+	}
+	delete(m.pollers, name)
 }
 
 func (m *Model) watchConfig() tea.Cmd {
-	path := m.configPath
+	store := m.session.store
+	if !store.watchable() {
+		return nil
+	}
 	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
-		targets, err := target.Load(path)
+		targets, err := store.load()
 		return configMsg{targets: targets, err: err}
 	})
 }
@@ -55,15 +62,27 @@ func (m *Model) reconcile(latest []target.Target) {
 	for _, configured := range latest {
 		next[configured.Name] = configured
 		previous, exists := old[configured.Name]
-		if exists && reflect.DeepEqual(previous, configured) {
-			continue
-		}
-		if exists {
+		samePoller := exists && previous.SamePollingIdentity(configured)
+		switch {
+		case !exists || !samePoller:
+			m.recordActivity(targetChangeActivity(previous, configured, exists))
+			if exists {
+				m.stop(configured.Name)
+				m.clearTargetOutputs(configured.Name)
+				m.pasture.ClearTarget(configured.Name)
+			}
+		case previous.Paused != configured.Paused:
+			m.recordActivity(targetChangeActivity(previous, configured, true))
 			m.stop(configured.Name)
 			m.clearTargetOutputs(configured.Name)
+		case !previous.SameInteractiveIdentity(configured):
+			m.recordActivity(targetChangeActivity(previous, configured, true))
+			continue
+		default:
+			continue
 		}
 		previousStatus := m.statuses[configured.Name]
-		if !exists || !samePollingTarget(previous, configured) {
+		if !samePoller {
 			previousStatus = poll.TargetStatus{}
 		}
 		delete(m.statuses, configured.Name)
@@ -74,40 +93,47 @@ func (m *Model) reconcile(latest []target.Target) {
 			m.start(configured)
 		}
 	}
-	for name := range old {
+	for _, configured := range m.targets {
+		name := configured.Name
 		if _, exists := next[name]; exists {
 			continue
 		}
 		m.stop(name)
+		m.recordActivity(name + " target removed")
 		delete(m.statuses, name)
 		m.clearTargetOutputs(name)
+		m.pasture.ClearTarget(name)
 	}
 	m.targets = append([]target.Target(nil), latest...)
 	m.targetCursor = min(m.targetCursor, max(0, len(m.targets)-1))
+	m.reconcileTargetOverlay()
 	m.rebuildRows()
 	m.syncFocusedOutput()
 }
 
-func samePollingTarget(a, b target.Target) bool {
-	a.Paused, b.Paused = false, false
-	return reflect.DeepEqual(a, b)
-}
-
 func (m *Model) clearTargetOutputs(name string) {
-	for key := range m.outputs {
-		if strings.HasPrefix(key, name+"\x00") {
-			delete(m.outputs, key)
-		}
-	}
-	for key := range m.inflight {
-		if strings.HasPrefix(key, name+"\x00") {
-			delete(m.inflight, key)
-		}
-	}
+	m.deleteOutputs(func(key fleet.AgentKey) bool { return key.Target == name })
 }
 
 func (m *Model) stopAll() {
-	for name := range m.cancels {
-		m.stop(name)
+	for name, current := range m.pollers {
+		if current.cancel != nil {
+			m.stop(name)
+		}
 	}
+}
+
+func (m *Model) applyStatus(name string, status poll.TargetStatus) tea.Cmd {
+	previous, exists := m.statuses[name]
+	change := fleet.DiffStatus(previous, status, exists)
+	if !m.session.isDemo() {
+		m.recordPollActivity(name, change)
+	}
+	m.pasture.RecordBubbles(fleet.Snapshot{Targets: m.targets, Statuses: m.statuses}, name, change)
+	m.pasture.ReconcileAgents(name, status)
+	m.clearMissingAgentOutputs(name, status)
+	m.statuses[name] = status
+	m.updateRefreshProgress(name)
+	m.rebuildRows()
+	return m.readFocused()
 }

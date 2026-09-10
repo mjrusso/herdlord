@@ -14,10 +14,7 @@ import (
 )
 
 func (m *Model) healthView() string {
-	width := m.width
-	if width <= 0 {
-		width = 80
-	}
+	width := m.viewportWidth()
 	contentWidth := max(1, width-4)
 	var body strings.Builder
 	tw := tabwriter.NewWriter(&body, 0, 0, 2, ' ', 0)

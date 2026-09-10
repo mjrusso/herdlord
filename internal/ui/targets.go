@@ -10,9 +10,41 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/mjrusso/herdlord/internal/display"
+	"github.com/mjrusso/herdlord/internal/fleet"
 	"github.com/mjrusso/herdlord/internal/target"
-	"github.com/mjrusso/herdlord/internal/targetmgr"
 )
+
+func (m *Model) reconcileTargetOverlay() {
+	switch m.overlay.kind {
+	case overlayOutput:
+		key := m.output.key
+		if key == (fleet.AgentKey{}) {
+			key = m.output.loadKey
+		}
+		if m.targetIndex(key.Target) >= 0 {
+			return
+		}
+		m.overlay = overlayState{}
+		m.setNotice(noticeError, "The selected target is no longer configured")
+	case overlayDelete, overlayAttach:
+		if m.targetIndex(m.overlay.target) >= 0 {
+			return
+		}
+		if m.overlay.kind == overlayDelete {
+			m.overlay = overlayState{kind: overlayTargets}
+		} else {
+			m.overlay = overlayState{}
+		}
+		m.setNotice(noticeError, "The selected target is no longer configured")
+	case overlayEdit:
+		if m.targetIndex(m.editTarget) >= 0 {
+			return
+		}
+		m.overlay = overlayState{kind: overlayTargets}
+		m.editTarget = ""
+		m.setNotice(noticeError, "The selected target is no longer configured")
+	}
+}
 
 func (m *Model) beginDelete() {
 	if m.overlay.kind == overlayTargets {
@@ -46,8 +78,7 @@ func (m *Model) managedTarget() (target.Target, bool) {
 func (m *Model) updateTargetManager(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
-		m.stopAll()
-		return m, tea.Quit
+		return m.quit()
 	case "q", "esc", "t":
 		m.overlay = overlayState{}
 		m.clearNotice()
@@ -140,8 +171,7 @@ func (m *Model) updateDeleteConfirmation(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	name := m.overlay.target
 	switch msg.String() {
 	case "ctrl+c":
-		m.stopAll()
-		return m, tea.Quit
+		return m.quit()
 	case "esc", "q", "Q", "n", "N":
 		m.overlay = overlayState{kind: overlayTargets}
 		return m, nil
@@ -150,13 +180,9 @@ func (m *Model) updateDeleteConfirmation(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		return m, nil
 	}
-	if _, err := (targetmgr.Manager{Poller: m.manager}).Remove(m.configPath, name); err != nil {
-		m.setNotice(noticeError, "Could not delete "+name+": "+err.Error())
-		return m, nil
-	}
-	latest, err := target.Load(m.configPath)
+	latest, err := m.session.store.remove(name)
 	if err != nil {
-		m.setNotice(noticeError, "Deleted "+name+", but could not reload targets: "+err.Error())
+		m.setNotice(noticeError, "Could not delete "+name+": "+err.Error())
 		return m, nil
 	}
 	m.reconcile(latest)
@@ -185,6 +211,7 @@ func (m *Model) deleteView() string {
 	if agents == 1 {
 		count = "1 agent"
 	}
+	warning := "This removes the target from Herdlord. It does not stop external processes."
 	lines := []string{
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1")).Render("Delete target"),
 		"",
@@ -193,7 +220,7 @@ func (m *Model) deleteView() string {
 		"Command  " + display.Text(prefix),
 		"Agents   " + count,
 		"",
-		ansi.Wrap("This removes the target configuration. It does not stop Herdr or its agents.", contentWidth, " "),
+		ansi.Wrap(warning, contentWidth, " "),
 		"",
 		hints(hint("y", "delete"), hint("q/n/Esc", "cancel"), hint("Ctrl-C", "quit")),
 	}
@@ -212,13 +239,9 @@ func (m *Model) toggleFocused() {
 	if name == "" {
 		return
 	}
-	if _, err := (targetmgr.Manager{Poller: m.manager}).TogglePaused(m.configPath, name); err != nil {
-		m.setNotice(noticeError, "Could not update "+name+": "+err.Error())
-		return
-	}
-	latest, err := target.Load(m.configPath)
+	latest, err := m.session.store.togglePaused(name)
 	if err != nil {
-		m.setNotice(noticeError, "Updated "+name+", but could not reload targets: "+err.Error())
+		m.setNotice(noticeError, "Could not update "+name+": "+err.Error())
 		return
 	}
 	m.reconcile(latest)
@@ -230,20 +253,34 @@ func (m *Model) toggleFocused() {
 }
 
 func (m *Model) refreshAll() {
-	if len(m.refresh) == 0 {
+	active := 0
+	for _, current := range m.pollers {
+		if current.refresh != nil {
+			active++
+		}
+	}
+	if active == 0 {
 		m.setNotice(noticeInfo, "No active targets to refresh")
 		return
 	}
-	m.refreshPending = make(map[string]bool, len(m.refresh))
-	m.refreshTotal = len(m.refresh)
-	for name, ch := range m.refresh {
-		m.refreshPending[name] = true
+	m.refreshPending = make(map[string]bool, active)
+	m.refreshTotal = active
+	for name, current := range m.pollers {
+		if current.refresh != nil {
+			m.refreshPending[name] = true
+		}
+	}
+	m.wakePollers()
+	m.setNotice(noticeInfo, fmt.Sprintf("Refreshing 0 of %d targets…", m.refreshTotal))
+}
+
+func (m *Model) wakePollers() {
+	for _, current := range m.pollers {
 		select {
-		case ch <- struct{}{}:
+		case current.refresh <- struct{}{}:
 		default:
 		}
 	}
-	m.setNotice(noticeInfo, fmt.Sprintf("Refreshing 0 of %d targets…", m.refreshTotal))
 }
 
 func (m *Model) updateRefreshProgress(name string) {

@@ -15,6 +15,7 @@ import (
 	"github.com/mjrusso/herdlord/internal/buildinfo"
 	"github.com/mjrusso/herdlord/internal/display"
 	"github.com/mjrusso/herdlord/internal/herdr"
+	"github.com/mjrusso/herdlord/internal/pasture"
 	"github.com/mjrusso/herdlord/internal/poll"
 	"github.com/mjrusso/herdlord/internal/target"
 	"github.com/mjrusso/herdlord/internal/ui"
@@ -30,6 +31,7 @@ type options struct {
 	skill    bool
 	client   poll.Client
 	save     func(string, []target.Target) error
+	renderer pasture.Renderer
 }
 
 func Execute() {
@@ -44,7 +46,7 @@ func Execute() {
 func NewRootCommand() *cobra.Command { return newRootCommand(herdr.Client{}) }
 
 func newRootCommand(client poll.Client, configure ...func(*options)) *cobra.Command {
-	opts := &options{output: "text", interval: 2 * time.Second, timeout: 10 * time.Second, client: client}
+	opts := &options{output: "text", interval: 2 * time.Second, timeout: 10 * time.Second, client: client, renderer: pasture.DetectRenderer()}
 	for _, apply := range configure {
 		if apply != nil {
 			apply(opts)
@@ -101,8 +103,19 @@ func newRootCommand(client poll.Client, configure ...func(*options)) *cobra.Comm
 	cmd.PersistentFlags().DurationVar(&opts.interval, "interval", 2*time.Second, "TUI poll interval")
 	cmd.Flags().BoolVar(&opts.version, "version", false, "print version information")
 	cmd.Flags().BoolVar(&opts.skill, "skill", false, "print the Herdlord agent skill")
-	cmd.AddCommand(newListCommand(opts), newStatusCommand(opts), newReadCommand(opts), newTargetsCommand(opts), newVersionCommand(opts), newSkillCommand(opts))
+	cmd.AddCommand(newDemoCommand(opts), newListCommand(opts), newStatusCommand(opts), newReadCommand(opts), newTargetsCommand(opts), newVersionCommand(opts), newSkillCommand(opts))
 	return cmd
+}
+
+func newDemoCommand(opts *options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "demo",
+		Short: "Run the TUI with simulated targets and agents",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runUI(ui.NewDemo(opts.interval, opts.timeout, opts.renderer))
+		},
+	}
 }
 
 func (o *options) path() (string, error) {
@@ -130,9 +143,13 @@ func runTUI(opts *options) error {
 	if err != nil {
 		return err
 	}
-	model := ui.New(targets, path, opts.manager())
+	model := ui.New(targets, path, opts.manager(), opts.renderer)
+	return runUI(model)
+}
+
+func runUI(model *ui.Model) error {
 	program := tea.NewProgram(model, tea.WithAltScreen())
 	model.SetProgram(program)
-	_, err = program.Run()
+	_, err := program.Run()
 	return err
 }

@@ -21,6 +21,7 @@ herdlord [flags]
 
 ### SEE ALSO
 
+* [herdlord demo](herdlord_demo.md)	 - Run the TUI with simulated targets and agents
 * [herdlord list](herdlord_list.md)	 - List agents across targets
 * [herdlord read](herdlord_read.md)	 - Print recent output from one agent pane
 * [herdlord skill](herdlord_skill.md)	 - Print the Herdlord agent skill

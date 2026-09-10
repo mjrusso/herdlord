@@ -18,7 +18,9 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
+	"github.com/mjrusso/herdlord/internal/fleet"
 	"github.com/mjrusso/herdlord/internal/herdr"
+	"github.com/mjrusso/herdlord/internal/pasture"
 	"github.com/mjrusso/herdlord/internal/poll"
 	"github.com/mjrusso/herdlord/internal/target"
 	"github.com/mjrusso/herdlord/internal/targetmgr"
@@ -31,6 +33,31 @@ type fakeClient struct {
 	status      herdr.Status
 	statusErr   error
 	statusCalls chan string
+}
+
+func newASCIIModel(targets []target.Target, configPath string, manager poll.Manager) *Model {
+	return New(targets, configPath, manager, pasture.ASCII)
+}
+
+func newASCIIDemo(interval, timeout time.Duration) *Model {
+	return NewDemo(interval, timeout, pasture.ASCII)
+}
+
+func testDashboardView(m *Model) string {
+	frame := m.measureFrame()
+	return m.dashboardView(frame, m.pasture.Display(frame.pasture))
+}
+
+func testFooterView(m *Model) string {
+	return m.footerView(testPastureDisplay(m).PageLabel)
+}
+
+func testPastureDisplay(m *Model) pasture.Display {
+	return m.pasture.Display(m.measureFrame().pasture)
+}
+
+func sendPollStatus(m *Model, name string, status poll.TargetStatus) {
+	m.Update(pollMsg{generation: m.pollers[name].generation, result: poll.Result{Name: name, Status: status}})
 }
 
 func (c *fakeClient) Status(_ context.Context, configured target.Target) (herdr.Status, error) {
@@ -67,7 +94,7 @@ func (*blockingReadClient) Read(ctx context.Context, _ target.Target, _, _ strin
 
 func TestFocusedOutputCachedPerPaneRevision(t *testing.T) {
 	client := &fakeClient{}
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: client})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: client})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, HerdrPath: "/opt/herdr", Agents: []herdr.Agent{
 		{PaneID: "p1", Agent: "codex", Status: "idle", Revision: 1},
 		{PaneID: "p2", Agent: "codex", Status: "idle", Revision: 2},
@@ -81,8 +108,8 @@ func TestFocusedOutputCachedPerPaneRevision(t *testing.T) {
 	if cmd := m.readFocused(); cmd != nil {
 		t.Fatal("cached pane scheduled another read")
 	}
-	if client.reads != 2 || m.output != "output for p1" {
-		t.Fatalf("reads = %d, output = %q", client.reads, m.output)
+	if client.reads != 2 || m.output.text != "output for p1" {
+		t.Fatalf("reads = %d, output = %q", client.reads, m.output.text)
 	}
 	if client.readLines != 120 {
 		t.Fatalf("read lines = %d, want 120", client.readLines)
@@ -101,7 +128,7 @@ func TestFocusedOutputCachedPerPaneRevision(t *testing.T) {
 
 func TestWorkingAgentOutputRefreshesWithoutRevisionChange(t *testing.T) {
 	client := &fakeClient{readOutputs: []string{"first capture", "second capture"}}
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: client})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: client})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Agent: "codex", Status: "working", Revision: 1}}}
 	m.rebuildRows()
 	runOutputCmd(t, m, m.readFocused())
@@ -109,33 +136,44 @@ func TestWorkingAgentOutputRefreshesWithoutRevisionChange(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("working agent reused stale output")
 	}
-	if m.output != "first capture" || m.outputLoading {
-		t.Fatalf("live refresh hid existing output: output=%q loading=%v", m.output, m.outputLoading)
+	if m.output.text != "first capture" || m.output.loading {
+		t.Fatalf("live refresh hid existing output: output=%q loading=%v", m.output.text, m.output.loading)
 	}
 	m.width, m.height = 60, 14
 	m.openExpandedOutput()
 	runOutputCmd(t, m, cmd)
-	if client.reads != 2 || m.output != "second capture" || !strings.Contains(m.outputViewport.View(), "second capture") {
-		t.Fatalf("live refresh = reads %d, output %q, viewport %q", client.reads, m.output, m.outputViewport.View())
+	if client.reads != 2 || m.output.text != "second capture" || !strings.Contains(m.outputViewport.View(), "second capture") {
+		t.Fatalf("live refresh = reads %d, output %q, viewport %q", client.reads, m.output.text, m.outputViewport.View())
+	}
+}
+
+func TestPollResultForRemovedTargetIsIgnored(t *testing.T) {
+	m := newASCIIModel(nil, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	sendPollStatus(m, "removed", poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "ghost", Status: "working"}}})
+	if _, exists := m.statuses["removed"]; exists {
+		t.Fatal("late poll result recreated a removed target status")
+	}
+	if len(m.rows) != 0 {
+		t.Fatalf("late poll result created rows: %+v", m.rows)
 	}
 }
 
 func TestOutputAndAttachErrorsAreVisible(t *testing.T) {
-	m := New(nil, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel(nil, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.rows = []row{{target: "box", agent: &herdr.Agent{PaneID: "p1"}}}
-	m.outputKey, m.output = "box\x00p1", "existing output"
-	_, _ = m.Update(attachResult("box\x00p1")(errors.New("terminal busy")))
+	m.output.show(fleet.NewAgentKey("box", "p1"), "existing output")
+	_, _ = m.Update(attachResult(fleet.NewAgentKey("box", "p1"))(errors.New("terminal busy")))
 	if !strings.Contains(m.message, "attach: terminal busy") {
 		t.Fatalf("message = %q", m.message)
 	}
-	if m.output != "existing output" {
-		t.Fatalf("attach failure cleared output: %q", m.output)
+	if m.output.text != "existing output" {
+		t.Fatalf("attach failure cleared output: %q", m.output.text)
 	}
 }
 
 func TestAddValidateAndDeletePersistedTarget(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config", "targets.json")
-	m := New(nil, path, poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel(nil, path, poll.Manager{Client: &fakeClient{}})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 	m.addInputs[0].SetValue("local")
@@ -176,7 +214,7 @@ func TestTargetManagerEditsAndPausesTargets(t *testing.T) {
 	if err := target.Save(path, []target.Target{configured}); err != nil {
 		t.Fatal(err)
 	}
-	m := New([]target.Target{configured}, path, poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{configured}, path, poll.Manager{Client: &fakeClient{}})
 	m.statuses["workbox"] = poll.TargetStatus{State: poll.OK}
 	m.rebuildRows()
 
@@ -219,7 +257,7 @@ func TestTargetManagerEditsAndPausesTargets(t *testing.T) {
 
 func TestDashboardTargetActionsAreConsolidated(t *testing.T) {
 	configured := target.Target{Name: "box"}
-	m := New([]target.Target{configured}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{configured}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK}
 	m.rebuildRows()
 	for _, key := range []rune{'a', 'd', ' '} {
@@ -235,7 +273,7 @@ func TestDashboardTargetActionsAreConsolidated(t *testing.T) {
 }
 
 func TestEmptyStartupExplainsHowToContinue(t *testing.T) {
-	m := New(nil, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel(nil, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	_ = m.Init()
 	if m.overlay.kind != overlayNone {
 		t.Fatalf("empty startup opened mode %q", m.overlay.kind)
@@ -251,7 +289,7 @@ func TestEmptyStartupExplainsHowToContinue(t *testing.T) {
 func TestAddFormShowsAllFieldsAndContextualControls(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
-	m := New(nil, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel(nil, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 	rawView := m.View()
@@ -301,7 +339,7 @@ func TestStaleValidationResultCannotOverwriteNewerEdit(t *testing.T) {
 	if err := target.Save(path, configured); err != nil {
 		t.Fatal(err)
 	}
-	m := New(configured, path, poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel(configured, path, poll.Manager{Client: &fakeClient{}})
 	m.validationGeneration = 2
 	status := poll.TargetStatus{State: poll.OK, Version: "0.8.0"}
 	newer := validationMsg{generation: 2, original: "box", target: target.Target{Name: "box", Prefix: []string{"ssh", "new", "--"}}, status: status}
@@ -317,7 +355,7 @@ func TestStaleValidationResultCannotOverwriteNewerEdit(t *testing.T) {
 }
 
 func TestModalViewsFrameDashboardAtStandardSize(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Agent: "codex", Status: "idle"}}}
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
@@ -356,7 +394,7 @@ func TestModalViewsFrameDashboardAtStandardSize(t *testing.T) {
 }
 
 func TestModalFallsBackOnSmallTerminal(t *testing.T) {
-	m := New(nil, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel(nil, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
@@ -386,7 +424,7 @@ func TestAddPersistsUnhealthyTarget(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			m := New(nil, path, manager)
+			m := newASCIIModel(nil, path, manager)
 			_, _ = m.Update(validationMsg{target: configured, status: status})
 
 			got, err := target.Load(path)
@@ -408,7 +446,7 @@ func TestAddPersistsUnhealthyTarget(t *testing.T) {
 
 func TestValidationResultsAppendToCurrentTargets(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "targets.json")
-	m := New(nil, path, poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel(nil, path, poll.Manager{Client: &fakeClient{}})
 	status := poll.TargetStatus{State: poll.OK, Version: "0.8.0"}
 	_, _ = m.Update(validationMsg{target: target.Target{Name: "one"}, status: status})
 	_, _ = m.Update(validationMsg{target: target.Target{Name: "two"}, status: status})
@@ -416,8 +454,8 @@ func TestValidationResultsAppendToCurrentTargets(t *testing.T) {
 	if err != nil || len(got) != 2 || got[0].Name != "one" || got[1].Name != "two" {
 		t.Fatalf("persisted targets = %#v, %v", got, err)
 	}
-	if m.generations["one"] != 1 || m.generations["two"] != 1 {
-		t.Fatalf("poller generations = %#v", m.generations)
+	if m.pollers["one"].generation == 0 || m.pollers["two"].generation == 0 || m.pollers["one"].generation == m.pollers["two"].generation {
+		t.Fatalf("pollers = %#v", m.pollers)
 	}
 }
 
@@ -427,12 +465,12 @@ func TestExternalConfigChangesAreReconciled(t *testing.T) {
 	if err := target.Save(path, initial); err != nil {
 		t.Fatal(err)
 	}
-	m := New(initial, path, poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel(initial, path, poll.Manager{Client: &fakeClient{}})
 	m.statuses["one"] = poll.TargetStatus{State: poll.OK}
 	m.statuses["removed"] = poll.TargetStatus{State: poll.OK}
 	m.rebuildRows()
 	m.start(initial[0])
-	oldGeneration := m.generations["one"]
+	oldGeneration := m.pollers["one"].generation
 
 	latest := []target.Target{{Name: "one", Prefix: []string{"ssh", "new", "--"}, Paused: true}, {Name: "added"}}
 	_, _ = m.Update(configMsg{targets: latest})
@@ -445,8 +483,8 @@ func TestExternalConfigChangesAreReconciled(t *testing.T) {
 	if m.statuses["one"].State != poll.Paused {
 		t.Fatalf("updated target status = %#v", m.statuses["one"])
 	}
-	if m.generations["one"] <= oldGeneration {
-		t.Fatalf("updated target generation = %d, old %d", m.generations["one"], oldGeneration)
+	if _, exists := m.pollers["one"]; exists {
+		t.Fatalf("paused target retained poller state after generation %d", oldGeneration)
 	}
 	if m.targetIndex("added") < 0 {
 		t.Fatal("added target is missing")
@@ -459,9 +497,20 @@ func TestExternalConfigChangesAreReconciled(t *testing.T) {
 	}
 }
 
+func TestRemovedPollersDoNotAccumulate(t *testing.T) {
+	m := newASCIIModel(nil, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	for i := range 50 {
+		m.reconcile([]target.Target{{Name: fmt.Sprintf("target-%d", i)}})
+		m.reconcile(nil)
+	}
+	if len(m.pollers) != 0 {
+		t.Fatalf("removed targets left %d poller entries", len(m.pollers))
+	}
+}
+
 func TestConfigWatcherLoadsExternalFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "targets.json")
-	m := New(nil, path, poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel(nil, path, poll.Manager{Client: &fakeClient{}})
 	want := []target.Target{{Name: "external"}}
 	if err := target.Save(path, want); err != nil {
 		t.Fatal(err)
@@ -496,7 +545,7 @@ func TestRunningTUIReloadsChangesFromCLIProcess(t *testing.T) {
 	}
 
 	statusCalls := make(chan string, 4)
-	m := New(initial, configPath, poll.Manager{Client: &fakeClient{statusCalls: statusCalls}})
+	m := newASCIIModel(initial, configPath, poll.Manager{Client: &fakeClient{statusCalls: statusCalls}})
 	program := tea.NewProgram(m, tea.WithInput(nil), tea.WithoutRenderer())
 	m.SetProgram(program)
 	done := make(chan tea.Model, 1)
@@ -549,7 +598,7 @@ func TestTUIMutationPreservesExternalChanges(t *testing.T) {
 	if err := target.Save(path, initial); err != nil {
 		t.Fatal(err)
 	}
-	m := New(initial, path, poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel(initial, path, poll.Manager{Client: &fakeClient{}})
 	m.statuses["one"] = poll.TargetStatus{State: poll.OK}
 	m.rebuildRows()
 	if _, err := target.Mutate(path, func(current []target.Target) ([]target.Target, error) {
@@ -570,26 +619,86 @@ func TestTUIMutationPreservesExternalChanges(t *testing.T) {
 
 func TestRemovingFocusedTargetClearsItsOutput(t *testing.T) {
 	targets := []target.Target{{Name: "one"}, {Name: "two"}}
-	m := New(targets, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel(targets, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["one"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Status: "working"}}}
 	m.statuses["two"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p2", Status: "working"}}}
 	m.rebuildRows()
-	m.outputKey, m.output = "one\x00p1", "output from removed target"
-	m.outputs[m.outputKey] = cachedOutput{revision: 1, text: m.output}
+	m.output.show(fleet.NewAgentKey("one", "p1"), "output from removed target")
+	m.outputs[m.output.key] = cachedOutput{revision: 1, text: m.output.text}
 	m.reconcile([]target.Target{{Name: "two"}})
-	if m.output != "" || m.outputKey != "" {
-		t.Fatalf("output after removal = %q, key %q", m.output, m.outputKey)
+	if m.output.text != "" || m.output.key != (fleet.AgentKey{}) {
+		t.Fatalf("output after removal = %q, key %q", m.output.text, m.output.key)
+	}
+}
+
+func TestRemovingFocusedTargetClosesExpandedOutput(t *testing.T) {
+	targets := []target.Target{{Name: "one"}, {Name: "two"}}
+	m := newASCIIModel(targets, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m.statuses["one"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Agent: "codex"}}}
+	m.statuses["two"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p2", Agent: "claude"}}}
+	m.rebuildRows()
+	m.output.show(fleet.NewAgentKey("one", "p1"), "output from removed target")
+	m.openExpandedOutput()
+	if m.overlay.kind != overlayOutput {
+		t.Fatal("test setup did not open expanded output")
+	}
+	m.reconcile([]target.Target{{Name: "two"}})
+	if m.overlay.kind == overlayOutput {
+		t.Fatal("expanded output stayed open after its target was removed")
+	}
+}
+
+func TestRemovedAgentCannotReuseCachedOutput(t *testing.T) {
+	agent := herdr.Agent{PaneID: "p1", Status: "idle", Revision: 1}
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{agent}}
+	m.rebuildRows()
+	key := fleet.NewAgentKey("box", "p1")
+	m.outputs[key] = cachedOutput{revision: 1, text: "output from the previous agent"}
+	m.inflight[key] = 1
+
+	sendPollStatus(m, "box", poll.TargetStatus{State: poll.OK})
+	if _, exists := m.outputs[key]; exists {
+		t.Fatal("removed agent retained cached output")
+	}
+	if _, exists := m.inflight[key]; exists {
+		t.Fatal("removed agent retained an in-flight read")
+	}
+
+	sendPollStatus(m, "box", poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{agent}})
+	if m.output.text == "output from the previous agent" {
+		t.Fatal("reused pane ID displayed output from the previous agent")
 	}
 }
 
 func TestStalePollResultIsIgnoredAfterTargetRestart(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.start(target.Target{Name: "box"})
-	staleGeneration := m.generations["box"]
+	staleGeneration := m.pollers["box"].generation
 	m.reconcile([]target.Target{{Name: "box", Prefix: []string{"ssh", "new", "--"}}})
 	_, _ = m.Update(pollMsg{generation: staleGeneration, result: poll.Result{Name: "box", Status: poll.TargetStatus{State: poll.Unreachable}}})
 	if m.statuses["box"].State == poll.Unreachable {
 		t.Fatal("stale poll result replaced restarted target state")
+	}
+}
+
+func TestAttachPrefixChangePreservesLiveState(t *testing.T) {
+	configured := target.Target{Name: "box"}
+	m := newASCIIModel([]target.Target{configured}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	agent := herdr.Agent{PaneID: "p1", Status: "idle", Revision: 1}
+	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{agent}}
+	m.rebuildRows()
+	m.pasture.Sync(m.measureFrame().pasture)
+	key := fleet.NewAgentKey("box", "p1")
+	m.outputs[key] = cachedOutput{revision: 1, text: "live output"}
+	generation := m.pollers["box"].generation
+
+	m.reconcile([]target.Target{{Name: "box", Interactive: []string{"ssh", "-t", "box", "--"}}})
+	if m.pollers["box"].generation != generation {
+		t.Fatal("attach-only edit restarted the poller")
+	}
+	if m.statuses["box"].State != poll.OK || m.outputs[key].text != "live output" {
+		t.Fatal("attach-only edit cleared live status or output")
 	}
 }
 
@@ -599,7 +708,7 @@ func TestPauseResumeAndRefresh(t *testing.T) {
 	if err := target.Save(path, targets); err != nil {
 		t.Fatal(err)
 	}
-	m := New(targets, path, poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel(targets, path, poll.Manager{Client: &fakeClient{}})
 	lastSuccess := time.Now().Add(-time.Minute)
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, LastSuccess: lastSuccess}
 	m.rebuildRows()
@@ -633,7 +742,7 @@ func TestPauseResumeAndRefresh(t *testing.T) {
 	}
 
 	refresh := make(chan struct{}, 1)
-	m.refresh["box"] = refresh
+	m.pollers["box"] = poller{refresh: refresh}
 	m.refreshAll()
 	if m.message != "Refreshing 0 of 1 targets…" {
 		t.Fatalf("refresh notice = %q", m.message)
@@ -646,9 +755,9 @@ func TestPauseResumeAndRefresh(t *testing.T) {
 }
 
 func TestRefreshTracksAllTargetsAndPreservesErrors(t *testing.T) {
-	m := New([]target.Target{{Name: "one"}, {Name: "two"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
-	m.refresh["one"] = make(chan struct{}, 1)
-	m.refresh["two"] = make(chan struct{}, 1)
+	m := newASCIIModel([]target.Target{{Name: "one"}, {Name: "two"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m.pollers["one"] = poller{refresh: make(chan struct{}, 1)}
+	m.pollers["two"] = poller{refresh: make(chan struct{}, 1)}
 	m.refreshAll()
 	m.updateRefreshProgress("one")
 	if m.message != "Refreshing 1 of 2 targets…" {
@@ -662,21 +771,22 @@ func TestRefreshTracksAllTargetsAndPreservesErrors(t *testing.T) {
 }
 
 func TestEmptyRecentOutputIsExplicit(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Agent: "codex", Revision: 1}}}
 	m.rebuildRows()
 	key := m.focusKey()
 	m.width, m.height = 80, 24
-	m.outputKey, m.output = key, ""
+	m.output.show(key, "")
 	m.showInspector = true
-	m.updateTableHeight()
+	m.table.SetHeight(m.measureFrame().pasture.Viewport.Height)
 	emptyHeight := m.table.Height()
-	m.output = "one line"
-	m.updateTableHeight()
+	m.output.text = "one line"
+	m.table.SetHeight(m.measureFrame().pasture.Viewport.Height)
 	if m.table.Height() != emptyHeight {
 		t.Fatalf("empty output table height = %d, populated output height = %d", emptyHeight, m.table.Height())
 	}
-	m.output = ""
+	m.output.text = ""
+	m.refreshFrame()
 	if view := m.View(); !strings.Contains(view, "Recent output") || !strings.Contains(view, "No recent output") {
 		t.Fatalf("empty output state:\n%s", view)
 	}
@@ -685,16 +795,16 @@ func TestEmptyRecentOutputIsExplicit(t *testing.T) {
 func TestExpandedOutputScrollsAndCloses(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Workspace: "project", Agent: "codex", Revision: 1}}}
 	m.rebuildRows()
 	m.width, m.height = 52, 14
-	m.outputKey = m.focusKey()
+	m.output.key = m.focusKey()
 	lines := make([]string, 30)
 	for i := range lines {
 		lines[i] = fmt.Sprintf("useful output line %02d", i+1)
 	}
-	m.output = strings.Join(lines, "\n")
+	m.output.text = strings.Join(lines, "\n")
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
 	if m.overlay.kind != overlayOutput || !m.outputViewport.AtBottom() {
 		t.Fatalf("expanded output did not open at bottom: expanded=%v offset=%d", (m.overlay.kind == overlayOutput), m.outputViewport.YOffset)
@@ -731,7 +841,7 @@ func TestExpandedOutputScrollsAndCloses(t *testing.T) {
 }
 
 func TestOutputDoesNotOpenForTargetStatusRow(t *testing.T) {
-	m := New([]target.Target{{Name: "offline"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "offline"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["offline"] = poll.TargetStatus{State: poll.Unreachable}
 	m.rebuildRows()
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
@@ -741,7 +851,7 @@ func TestOutputDoesNotOpenForTargetStatusRow(t *testing.T) {
 }
 
 func TestSelectionAndTargetRowsHaveTextMarkers(t *testing.T) {
-	m := New([]target.Target{{Name: "agents"}, {Name: "offline"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "agents"}, {Name: "offline"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["agents"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Agent: "codex", Status: "working"}}}
 	m.statuses["offline"] = poll.TargetStatus{State: poll.Unreachable}
 	m.rebuildRows()
@@ -752,7 +862,7 @@ func TestSelectionAndTargetRowsHaveTextMarkers(t *testing.T) {
 }
 
 func TestCursorDoesNotMoveAttentionMarker(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{
 		{PaneID: "blocked", Agent: "codex", Status: "blocked"},
 		{PaneID: "done", Agent: "codex", Status: "done"},
@@ -769,7 +879,7 @@ func TestCursorDoesNotMoveAttentionMarker(t *testing.T) {
 }
 
 func TestAttentionStateIsExplicitAndReadOnly(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{
 		{PaneID: "blocked", Agent: "codex", Status: "blocked"},
 		{PaneID: "done", Agent: "codex", Status: "done"},
@@ -792,20 +902,20 @@ func TestAttentionStateIsExplicitAndReadOnly(t *testing.T) {
 }
 
 func TestStaleOutputDoesNotReplaceNewerRevision(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Agent: "codex", Status: "working", Revision: 5}}}
 	m.rebuildRows()
 	key := m.focusKey()
-	m.outputLoading, m.loadingKey, m.loadingRev = true, key, 5
+	m.output.load(key, 5)
 	_, _ = m.Update(outputMsg{key: key, revision: 5, text: "new"})
 	_, _ = m.Update(outputMsg{key: key, revision: 4, text: "old"})
-	if m.output != "new" || m.outputs[key].revision != 5 {
-		t.Fatalf("output = %q, cache = %#v", m.output, m.outputs[key])
+	if m.output.text != "new" || m.outputs[key].revision != 5 {
+		t.Fatalf("output = %q, cache = %#v", m.output.text, m.outputs[key])
 	}
 }
 
 func TestOutOfOrderOutputDoesNotCompleteNewerRead(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Agent: "codex", Status: "working", Revision: 1}}}
 	m.rebuildRows()
 	key := m.focusKey()
@@ -818,17 +928,17 @@ func TestOutOfOrderOutputDoesNotCompleteNewerRead(t *testing.T) {
 		t.Fatal("new revision did not schedule a read")
 	}
 	_, _ = m.Update(outputMsg{key: key, revision: 1, text: "old"})
-	if m.output != "" || !m.outputLoading || m.loadingRev != 2 {
-		t.Fatalf("old completion changed current load: output %q, loading %v, revision %d", m.output, m.outputLoading, m.loadingRev)
+	if m.output.text != "" || !m.output.loading || m.output.loadRev != 2 {
+		t.Fatalf("old completion changed current load: output %q, loading %v, revision %d", m.output.text, m.output.loading, m.output.loadRev)
 	}
 	_, _ = m.Update(outputMsg{key: key, revision: 2, text: "new"})
-	if m.output != "new" || m.outputLoading {
-		t.Fatalf("new completion = output %q, loading %v", m.output, m.outputLoading)
+	if m.output.text != "new" || m.output.loading {
+		t.Fatalf("new completion = output %q, loading %v", m.output.text, m.output.loading)
 	}
 }
 
 func TestRepeatedPollDoesNotDuplicateFocusedRead(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Agent: "codex", Status: "working", Revision: 1}}}
 	m.rebuildRows()
 	if m.readFocused() == nil {
@@ -840,7 +950,7 @@ func TestRepeatedPollDoesNotDuplicateFocusedRead(t *testing.T) {
 }
 
 func TestReturningToInflightPaneDoesNotDuplicateRead(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{
 		{PaneID: "p1", Agent: "one", Status: "working", Revision: 1},
 		{PaneID: "p2", Agent: "two", Status: "idle", Revision: 1},
@@ -854,13 +964,13 @@ func TestReturningToInflightPaneDoesNotDuplicateRead(t *testing.T) {
 		t.Fatal("second pane did not schedule a read")
 	}
 	m.table.SetCursor(0)
-	if m.readFocused() != nil || !m.outputLoading || m.loadingKey != "box\x00p1" {
-		t.Fatalf("returning to in-flight pane scheduled a duplicate: loading %v, key %q", m.outputLoading, m.loadingKey)
+	if m.readFocused() != nil || !m.output.loading || m.output.loadKey != fleet.NewAgentKey("box", "p1") {
+		t.Fatalf("returning to in-flight pane scheduled a duplicate: loading %v, key %q", m.output.loading, m.output.loadKey)
 	}
 }
 
 func TestStaleOutputErrorIsNotShown(t *testing.T) {
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{
 		{PaneID: "p1", Agent: "one", Status: "working", Revision: 1},
 		{PaneID: "p2", Agent: "two", Status: "idle", Revision: 1},
@@ -869,18 +979,18 @@ func TestStaleOutputErrorIsNotShown(t *testing.T) {
 	_ = m.readFocused()
 	m.table.SetCursor(1)
 	_ = m.readFocused()
-	_, _ = m.Update(outputMsg{key: "box\x00p1", target: "box", revision: 1, err: errors.New("timed out")})
-	if m.message != "" || !m.outputLoading || m.loadingKey != "box\x00p2" {
-		t.Fatalf("stale error changed UI: message %q, loading %v, key %q", m.message, m.outputLoading, m.loadingKey)
+	_, _ = m.Update(outputMsg{key: fleet.NewAgentKey("box", "p1"), target: "box", revision: 1, err: errors.New("timed out")})
+	if m.message != "" || !m.output.loading || m.output.loadKey != fleet.NewAgentKey("box", "p2") {
+		t.Fatalf("stale error changed UI: message %q, loading %v, key %q", m.message, m.output.loading, m.output.loadKey)
 	}
 }
 
 func TestTargetChangeInvalidatesOutputAndRejectsInflightRead(t *testing.T) {
-	m := New([]target.Target{{Name: "box", Prefix: []string{"ssh", "old", "--"}}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
+	m := newASCIIModel([]target.Target{{Name: "box", Prefix: []string{"ssh", "old", "--"}}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: &fakeClient{}})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Status: "working", Revision: 1}}}
 	m.rebuildRows()
 	m.start(m.targets[0])
-	oldGeneration := m.generations["box"]
+	oldGeneration := m.pollers["box"].generation
 	key := m.focusKey()
 	m.outputs[key] = cachedOutput{revision: 1, text: "old machine"}
 
@@ -889,14 +999,14 @@ func TestTargetChangeInvalidatesOutputAndRejectsInflightRead(t *testing.T) {
 		t.Fatalf("output cache retained changed target: %#v", m.outputs)
 	}
 	_, _ = m.Update(outputMsg{key: key, target: "box", generation: oldGeneration, revision: 1, text: "late old machine"})
-	if _, ok := m.outputs[key]; ok || m.output != "" {
-		t.Fatalf("stale output accepted: cache %#v, output %q", m.outputs, m.output)
+	if _, ok := m.outputs[key]; ok || m.output.text != "" {
+		t.Fatalf("stale output accepted: cache %#v, output %q", m.outputs, m.output.text)
 	}
 }
 
 func TestFocusedReadUsesConfiguredTimeout(t *testing.T) {
 	client := &blockingReadClient{}
-	m := New([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: client, Timeout: 20 * time.Millisecond})
+	m := newASCIIModel([]target.Target{{Name: "box"}}, filepath.Join(t.TempDir(), "targets.json"), poll.Manager{Client: client, Timeout: 20 * time.Millisecond})
 	m.statuses["box"] = poll.TargetStatus{State: poll.OK, Agents: []herdr.Agent{{PaneID: "p1", Status: "working", Revision: 1}}}
 	m.rebuildRows()
 	started := time.Now()
